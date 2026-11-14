@@ -1,0 +1,15 @@
+# Build output
+/bin/
+/dist/
+
+# Local configuration (copy kvleva.example.yaml to kvleva.yaml)
+/kvleva.yaml
+
+# Frontend dev/test dependencies (the app itself has no build step)
+node_modules/
+
+# Editor and OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store

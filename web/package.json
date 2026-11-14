@@ -1,0 +1,13 @@
+{
+  "name": "kube-kvleva-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Dev/test tooling for the kvleva frontend. The shipped frontend (web/static) has no build step.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}

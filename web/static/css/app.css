@@ -1,0 +1,794 @@
+/* kvleva: dark, calm, information-dense. No imports, fonts or images: the page
+   is served under the CSP default-src 'self' and must fetch nothing else. */
+
+:root {
+  color-scheme: dark;
+
+  /* Health colors: the primary visual signal of the whole app. */
+  --green: #3fb950;
+  --yellow: #d29922;
+  --red: #f85149;
+
+  /* Reference arrows are neutral on purpose (never a health color). */
+  --arrow: #8b949e;
+  --arrow-emphasized: #58a6ff;
+
+  --bg: #0d1117;
+  --panel: #161b22;
+  --panel-raised: #1c2128;
+  --line: #30363d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --accent: #58a6ff;
+  --health: var(--muted);
+
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] { display: none !important; }
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.4 var(--sans);
+}
+
+h1,
+h2,
+h3,
+h4,
+p {
+  margin: 0;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--muted);
+}
+
+input[type="search"] {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --- Health ---------------------------------------------------------------
+   A health class selects the color; boxes draw their outline with it. Custom
+   properties inherit, so everything that shows a health first falls back to
+   neutral: a box with an unknown health must not take its container's color.
+   The health classes come after this reset so that they win. */
+
+.widget,
+.container,
+.area,
+.dot,
+.pill,
+.rollup-item,
+.drawer-head,
+.links li {
+  --health: var(--muted);
+}
+
+.health-green { --health: var(--green); }
+.health-yellow { --health: var(--yellow); }
+.health-red { --health: var(--red); }
+
+.widget {
+  border: 2px solid var(--health);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 4px 8px;
+  min-width: 120px;
+  max-width: 100%;
+  cursor: pointer;
+}
+
+.container {
+  border: 2px solid var(--health);
+  border-radius: 4px;
+  background: var(--panel-raised);
+  padding: 1px 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.area {
+  border: 2px solid var(--health);
+  border-radius: 8px;
+  background: var(--bg);
+  margin-top: 10px;
+}
+
+.dot {
+  color: var(--health);
+  font-size: 11px;
+  flex: none;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--health);
+  color: var(--health);
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.rollup {
+  display: inline-flex;
+  gap: 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.rollup-item {
+  color: var(--health);
+}
+
+.rollup-item.zero {
+  opacity: 0.4;
+}
+
+/* --- Header --------------------------------------------------------------- */
+
+.header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  position: relative;
+}
+
+.app-name {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.cluster-name {
+  font-weight: 600;
+}
+
+.cluster-version,
+.sync {
+  color: var(--muted);
+}
+
+.sync.ok {
+  color: var(--green);
+}
+
+.sync.pending {
+  color: var(--yellow);
+}
+
+.sync-errors {
+  display: inline-block;
+  margin-left: 8px;
+  color: var(--yellow);
+}
+
+.sync-errors summary {
+  cursor: pointer;
+}
+
+.sync-errors ul {
+  position: absolute;
+  z-index: 20;
+  top: 100%;
+  left: 12px;
+  margin: 0;
+  padding: 8px 12px 8px 24px;
+  max-width: 640px;
+  max-height: 50vh;
+  overflow: auto;
+  background: var(--panel-raised);
+  border: 1px solid var(--yellow);
+  border-radius: 6px;
+  color: var(--text);
+}
+
+.stream {
+  color: var(--yellow);
+}
+
+.pills {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--health);
+  border-radius: 999px;
+  padding: 1px 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.pill[aria-pressed="false"] {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+.search {
+  width: 220px;
+}
+
+/* --- Layout --------------------------------------------------------------- */
+
+.layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.sidebar {
+  flex: none;
+  width: 260px;
+  overflow: auto;
+  padding: 10px 12px;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
+
+.canvas {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+
+.canvas-content {
+  position: relative;
+  min-height: 100%;
+  padding: 12px;
+}
+
+.drawer {
+  flex: none;
+  width: 480px;
+  max-width: 50vw;
+  overflow: auto;
+  padding: 10px 12px 24px;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  position: relative;
+}
+
+.app-error {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  max-width: 80vw;
+  padding: 8px 14px;
+  background: var(--panel-raised);
+  border: 1px solid var(--red);
+  border-radius: 6px;
+  z-index: 30;
+}
+
+/* --- Sidebar -------------------------------------------------------------- */
+
+.sidebar-title {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.filter-group {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 10px 0 0;
+  padding: 8px 0 0;
+  min-width: 0;
+}
+
+.filter-group legend {
+  padding: 0 6px 0 0;
+  font-weight: 600;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 0;
+  cursor: pointer;
+}
+
+.note {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.note.error {
+  color: var(--red);
+}
+
+.kind-search {
+  width: 100%;
+}
+
+.kind-buttons {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.kind-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.kind-list .check {
+  align-items: baseline;
+}
+
+.kind-name {
+  overflow-wrap: anywhere;
+}
+
+.kind-group {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.count {
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Canvas: cluster box, areas, lanes ------------------------------------ */
+
+.cluster-box {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px 10px;
+}
+
+.cluster-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cluster-title {
+  font-size: 14px;
+  margin-right: auto;
+  overflow-wrap: anywhere;
+}
+
+.area-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+}
+
+.area-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.area-title.selectable {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.area-title.selectable:hover {
+  background: var(--panel-raised);
+}
+
+.area-head .count {
+  margin-left: 0;
+}
+
+.area-head .rollup {
+  margin-left: auto;
+}
+
+.list {
+  padding: 2px 8px 8px;
+}
+
+.lane {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.lane + .lane {
+  border-top: 1px dashed var(--line);
+}
+
+.lane-label {
+  flex: none;
+  width: 120px;
+  padding-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.lane-items {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.more {
+  margin-top: 6px;
+}
+
+/* --- Widgets -------------------------------------------------------------- */
+
+.widget:hover {
+  background: var(--panel-raised);
+}
+
+.widget.selected,
+.container.selected,
+.area-title.selected {
+  box-shadow: 0 0 0 2px var(--accent);
+  background: var(--panel-raised);
+}
+
+.widget.dimmed > .widget-head,
+.widget.dimmed > .reason,
+.widget.dimmed > .containers {
+  opacity: 0.45;
+}
+
+.widget.dimmed {
+  border-style: dashed;
+}
+
+.widget-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toggle {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  line-height: 1;
+}
+
+.kind {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.reason {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.containers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.container {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.container.init {
+  border-style: dashed;
+}
+
+.tag {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.children {
+  margin-top: 6px;
+  border-top: 1px solid var(--line);
+  cursor: default;
+}
+
+.children > .list {
+  padding: 2px 0 2px;
+}
+
+/* Lanes inside a widget are compact: the label sits above its row. */
+.children .lane {
+  flex-direction: column;
+  gap: 2px;
+}
+
+.children .lane-label {
+  width: auto;
+  padding-top: 0;
+  text-align: left;
+}
+
+.children .lane-items {
+  flex: none;
+  width: 100%;
+}
+
+@keyframes flash {
+  from { box-shadow: 0 0 0 8px var(--accent); }
+  to { box-shadow: 0 0 0 0 transparent; }
+}
+
+.flash {
+  animation: flash 0.9s ease-out 2;
+}
+
+/* --- Arrows --------------------------------------------------------------- */
+
+.arrows {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.arrow {
+  fill: none;
+  stroke: var(--arrow);
+  stroke-width: 1.2;
+  opacity: 0.45;
+}
+
+.arrow.emphasized {
+  stroke: var(--arrow-emphasized);
+  stroke-width: 2;
+  opacity: 1;
+}
+
+#arrowhead path {
+  fill: var(--arrow);
+}
+
+#arrowhead-emphasized path {
+  fill: var(--arrow-emphasized);
+}
+
+/* --- Drawer --------------------------------------------------------------- */
+
+.drawer-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.drawer-head {
+  padding-right: 36px;
+}
+
+.drawer-kind {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.drawer-name {
+  font-size: 15px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.drawer-health {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 10px;
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.section {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.section-title {
+  font-size: 13px;
+  margin-right: auto;
+}
+
+.subsection-title {
+  margin: 8px 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.yaml {
+  margin: 0;
+  padding: 8px;
+  max-height: 60vh;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: 12px/1.45 var(--mono);
+  white-space: pre;
+  tab-size: 2;
+}
+
+.tok-key { color: #79c0ff; }
+.tok-string { color: #a5d6ff; }
+.tok-number { color: #f2cc60; }
+.tok-keyword { color: #d2a8ff; }
+.tok-comment { color: var(--muted); font-style: italic; }
+.tok-punct { color: var(--muted); }
+
+.table-wrap {
+  overflow: auto;
+}
+
+.grid {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+
+.grid th,
+.grid td {
+  border-bottom: 1px solid var(--line);
+  padding: 3px 6px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.grid th {
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.grid td {
+  overflow-wrap: anywhere;
+}
+
+.grid tr.warning td:first-child {
+  color: var(--yellow);
+  font-weight: 600;
+}
+
+.links {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.links li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 1px 0;
+}
+
+.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+.relation {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.missing {
+  color: var(--red);
+}
+
+.missing .missing-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}

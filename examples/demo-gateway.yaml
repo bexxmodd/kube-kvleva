@@ -1,0 +1,58 @@
+# Gateway API sample: a Gateway and two HTTPRoutes, connected by arrows.
+#
+# Needs the Gateway API resource types, and examples/demo.yaml for the
+# namespace and the "web" service:
+#
+#   kubectl --context kind-kvleva apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/standard-install.yaml
+#   kubectl --context kind-kvleva apply -f examples/demo.yaml -f examples/demo-gateway.yaml
+#
+# Without a Gateway controller in the cluster nothing reconciles these, so
+# kvleva shows them yellow ("waiting for controller"), which is the truth.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: kvleva-demo
+spec:
+  controllerName: kvleva.example/no-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: edge
+  namespace: kvleva-demo
+spec:
+  gatewayClassName: kvleva-demo
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+---
+# Arrows: HTTPRoute -> Gateway (parentRefs) and HTTPRoute -> Service
+# (backendRefs).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web
+  namespace: kvleva-demo
+spec:
+  parentRefs:
+    - name: edge
+  rules:
+    - backendRefs:
+        - name: web
+          port: 80
+---
+# The backend of this route does not exist; kvleva lists it under "missing
+# references" in the route's details.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: dangling
+  namespace: kvleva-demo
+spec:
+  parentRefs:
+    - name: edge
+  rules:
+    - backendRefs:
+        - name: no-such-service
+          port: 80

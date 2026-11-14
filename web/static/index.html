@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>kvleva</title>
+  <link rel="stylesheet" href="css/app.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <header class="header">
+    <h1 class="app-name">kvleva</h1>
+    <span id="cluster-name" class="cluster-name"></span>
+    <span id="cluster-version" class="cluster-version"></span>
+    <span id="sync" class="sync" role="status"></span>
+    <span id="stream" class="stream" role="status"></span>
+    <div id="pills" class="pills" role="group" aria-label="Cluster health totals"></div>
+    <input id="search" class="search" type="search" placeholder="Search by name…"
+           aria-label="Search resources by name" autocomplete="off" spellcheck="false">
+  </header>
+
+  <div class="layout">
+    <nav id="sidebar" class="sidebar" aria-label="Filters">
+      <h2 class="sidebar-title">Filters</h2>
+
+      <fieldset id="health-filter" class="filter-group">
+        <legend>Health</legend>
+        <label class="check"><input type="checkbox" data-health="green" checked>
+          <span class="dot health-green" aria-hidden="true">●</span> green</label>
+        <label class="check"><input type="checkbox" data-health="yellow" checked>
+          <span class="dot health-yellow" aria-hidden="true">▲</span> yellow</label>
+        <label class="check"><input type="checkbox" data-health="red" checked>
+          <span class="dot health-red" aria-hidden="true">■</span> red</label>
+      </fieldset>
+
+      <fieldset id="connections-filter" class="filter-group">
+        <legend>Connections</legend>
+        <label class="check"><input type="radio" name="connections" value="all" checked> all</label>
+        <label class="check"><input type="radio" name="connections" value="selected"> selected only</label>
+        <label class="check"><input type="radio" name="connections" value="off"> off</label>
+        <p id="connections-note" class="note" role="status" hidden></p>
+      </fieldset>
+
+      <fieldset id="kinds-filter" class="filter-group">
+        <legend>Resource types</legend>
+        <input id="kind-search" class="kind-search" type="search" placeholder="Narrow types…"
+               aria-label="Narrow the list of resource types" autocomplete="off" spellcheck="false">
+        <div class="kind-buttons">
+          <button id="kinds-all" type="button">All</button>
+          <button id="kinds-none" type="button">None</button>
+        </div>
+        <ul id="kind-list" class="kind-list"></ul>
+      </fieldset>
+    </nav>
+
+    <main id="canvas" class="canvas" aria-label="Cluster">
+      <div id="canvas-content" class="canvas-content">
+        <section id="cluster-box" class="cluster-box">
+          <header class="cluster-head">
+            <h2 id="cluster-title" class="cluster-title">cluster</h2>
+            <button id="expand-all" type="button">Expand all</button>
+            <button id="collapse-all" type="button">Collapse all</button>
+          </header>
+          <div id="areas" class="areas"></div>
+        </section>
+        <svg id="arrows" class="arrows" aria-hidden="true" focusable="false">
+          <defs>
+            <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="8" refY="4"
+                    orient="auto" markerUnits="userSpaceOnUse">
+              <path d="M0 0 L8 4 L0 8 z"></path>
+            </marker>
+            <marker id="arrowhead-emphasized" markerWidth="10" markerHeight="10" refX="10" refY="5"
+                    orient="auto" markerUnits="userSpaceOnUse">
+              <path d="M0 0 L10 5 L0 10 z"></path>
+            </marker>
+          </defs>
+          <g id="arrow-paths"></g>
+        </svg>
+      </div>
+    </main>
+
+    <aside id="drawer" class="drawer" aria-label="Details" hidden>
+      <button id="drawer-close" class="drawer-close" type="button" aria-label="Close details">×</button>
+      <div id="drawer-body" class="drawer-body"></div>
+    </aside>
+  </div>
+
+  <p id="app-error" class="app-error" role="alert" hidden></p>
+</body>
+</html>

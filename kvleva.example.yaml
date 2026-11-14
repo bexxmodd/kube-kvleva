@@ -1,0 +1,34 @@
+# kvleva configuration. Every setting is optional; the values below are the
+# defaults unless noted. Start with:
+#
+#   kvleva -config kvleva.yaml
+
+cluster:
+  # Path of the kubeconfig file. Empty means the standard lookup:
+  # $KUBECONFIG, then ~/.kube/config.
+  kubeconfig: ""
+  # Kubeconfig context to connect to. Empty means the kubeconfig's current
+  # context. (Not a default: this example pins the kind cluster "kvleva".)
+  context: kind-kvleva
+
+listen:
+  # Only local addresses are accepted: 127.0.0.1, ::1, or localhost.
+  # kvleva refuses to start on anything reachable from other machines.
+  address: 127.0.0.1
+  port: 8080
+
+resources:
+  # Resource types that are not loaded from the cluster, named like kubectl
+  # names them: "<resource>" for the core group, "<resource>.<group>"
+  # otherwise. Setting this list replaces the default below, so keep the
+  # entries you still want excluded.
+  #
+  # Events are shown in the details of the resource they are about, and
+  # Leases change every few seconds on every node, so both are left out of
+  # the picture by default. To also keep Secrets out of kvleva entirely, add
+  # "secrets" (their values are never shown either way).
+  exclude:
+    - events
+    - events.events.k8s.io
+    - leases.coordination.k8s.io
+    - endpoints
