@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>kvleva</title>
+  <link rel="icon" href="img/logo.svg" type="image/svg+xml">
   <script src="js/theme-boot.js"></script>
   <link rel="stylesheet" href="css/app.css">
   <script type="module" src="js/main.js"></script>
@@ -12,7 +13,7 @@
   <header class="header">
     <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="true"
             title="Hide the filters panel"><span aria-hidden="true">☰</span> Filters</button>
-    <h1 class="app-name">kvleva</h1>
+    <h1 class="app-name"><span class="logo" aria-hidden="true"></span>kvleva</h1>
     <span id="cluster-name" class="cluster-name"></span>
     <span id="cluster-version" class="cluster-version"></span>
     <span id="sync" class="sync" role="status"></span>
@@ -37,11 +38,11 @@
       <fieldset id="health-filter" class="filter-group">
         <legend>Health</legend>
         <label class="check"><input type="checkbox" data-health="green" checked>
-          <span class="dot health-green" aria-hidden="true">●</span> green</label>
+          <span class="dot health-green" aria-hidden="true">●</span> Healthy</label>
         <label class="check"><input type="checkbox" data-health="yellow" checked>
-          <span class="dot health-yellow" aria-hidden="true">▲</span> yellow</label>
+          <span class="dot health-yellow" aria-hidden="true">▲</span> In-Progress</label>
         <label class="check"><input type="checkbox" data-health="red" checked>
-          <span class="dot health-red" aria-hidden="true">■</span> red</label>
+          <span class="dot health-red" aria-hidden="true">■</span> Failed</label>
       </fieldset>
 
       <fieldset id="kinds-filter" class="filter-group">
@@ -78,6 +79,20 @@
     <aside id="drawer" class="drawer" aria-label="Details" hidden>
       <button id="drawer-close" class="drawer-close" type="button" aria-label="Close details">×</button>
       <div id="drawer-body" class="drawer-body"></div>
+      <section id="logs" class="logs" aria-label="Live logs" hidden>
+        <div class="logs-bar">
+          <button id="logs-back" class="logs-back" type="button"><span aria-hidden="true">←</span> Details</button>
+          <span id="logs-status" class="logs-status" role="status"></span>
+          <button id="logs-restart" class="view-logs" type="button" hidden>View Live Logs</button>
+        </div>
+        <input id="logs-filter" class="logs-filter" type="search" placeholder="Filter: keyword or /regex/"
+               aria-label="Filter log lines" autocomplete="off" spellcheck="false">
+        <p id="logs-filter-status" class="logs-filter-status note" role="status"></p>
+        <p id="logs-pods" class="note" hidden></p>
+        <p id="logs-dropped" class="note" hidden>Older lines were dropped.</p>
+        <p id="logs-empty" class="note">No log lines yet.</p>
+        <div id="logs-lines" class="logs-lines" role="log" aria-label="Log lines" tabindex="0"></div>
+      </section>
     </aside>
   </div>
 

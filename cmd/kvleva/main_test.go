@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -54,12 +55,22 @@ func (c *fakeCluster) serve(w http.ResponseWriter, r *http.Request) {
 	case "/api/v1":
 		fmt.Fprint(w, `{"kind": "APIResourceList", "groupVersion": "v1", "resources": [
 			{"name": "configmaps", "kind": "ConfigMap", "namespaced": true, "verbs": ["get", "list", "watch"]},
-			{"name": "secrets", "kind": "Secret", "namespaced": true, "verbs": ["get", "list", "watch"]}
+			{"name": "secrets", "kind": "Secret", "namespaced": true, "verbs": ["get", "list", "watch"]},
+			{"name": "pods", "kind": "Pod", "namespaced": true, "verbs": ["get", "list", "watch"]}
 		]}`)
 	case "/api/v1/configmaps":
 		c.listOrWatch(w, r, "ConfigMap", "settings")
 	case "/api/v1/secrets":
 		c.listOrWatch(w, r, "Secret", "db")
+	case "/api/v1/pods":
+		c.listOrWatch(w, r, "Pod", "web")
+	case "/api/v1/namespaces/default/pods/web/log":
+		// The log of a container: what it wrote so far, then silence
+		// until the reader goes away.
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprintf(w, "2026-11-15T18:00:01Z hello from %s\n", r.URL.Query().Get("container"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
 	default:
 		http.NotFound(w, r)
 	}
@@ -73,10 +84,16 @@ func (c *fakeCluster) serve(w http.ResponseWriter, r *http.Request) {
 //   - A watch that asks for the initial state as events gets both objects
 //     followed by the bookmark that ends the initial state.
 //   - After that a watch stays open, silent, until the client goes away.
+//
+// Pods have one container, "app".
 func (c *fakeCluster) listOrWatch(w http.ResponseWriter, r *http.Request, kind, name string) {
+	spec := ""
+	if kind == "Pod" {
+		spec = `, "spec": {"containers": [{"name": "app", "image": "nginx:1.27"}]}`
+	}
 	object := func(name string) string {
-		return fmt.Sprintf(`{"apiVersion": "v1", "kind": %q, "metadata": {"namespace": "default", "name": %q, "uid": %q, "resourceVersion": "5"}}`,
-			kind, name, "uid-"+name)
+		return fmt.Sprintf(`{"apiVersion": "v1", "kind": %q, "metadata": {"namespace": "default", "name": %q, "uid": %q, "resourceVersion": "5"}%s}`,
+			kind, name, "uid-"+name, spec)
 	}
 	first, second := object(name), object(name+"-2")
 	query := r.URL.Query()
@@ -270,6 +287,100 @@ func TestRunServesTheConfiguredClusterOnTheConfiguredPort(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Errorf("run() did not return within 20s of being stopped")
+	}
+}
+
+// startApp runs the app against cluster with the given extra settings and
+// returns its base URL once the cluster's pods are loaded. The app stops
+// with the test.
+func startApp(t *testing.T, cluster *fakeCluster, settings string) string {
+	t.Helper()
+	port := freePort(t)
+	configPath := writeFiles(t, cluster.URL, fmt.Sprintf("listen:\n  port: %d\n%s", port, settings))
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	ctx, cancel := context.WithCancel(t.Context())
+	result := make(chan error, 1)
+	go func() { result <- run(ctx, configPath) }()
+	t.Cleanup(func() {
+		cancel()
+		<-result
+	})
+	var listing string
+	if !eventually(func() bool {
+		status, body, err := get(ctx, base+"/api/resources?namespace=default")
+		listing = body
+		return err == nil && status == http.StatusOK && strings.Contains(body, `"uid":"uid-web"`)
+	}) {
+		t.Fatalf("the cluster's pods never appeared at %s; last listing: %s", base, listing)
+	}
+	return base
+}
+
+func TestRunStreamsTheLogsOfAPod(t *testing.T) {
+	cluster := newFakeCluster(t)
+	base := startApp(t, cluster, "")
+
+	// The details offer the logs.
+	_, detail, err := get(t.Context(), base+"/api/resources/uid-web")
+	if err != nil || !strings.Contains(detail, `"logs":{"available":true,"pods":1,"totalPods":1}`) {
+		t.Errorf("GET /api/resources/uid-web = %s (%v), want it to offer the logs of its one pod", detail, err)
+	}
+
+	// The stream delivers what the container wrote.
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/resources/uid-web/logs", nil)
+	if err != nil {
+		t.Fatalf("building the logs request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/resources/uid-web/logs failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Content-Type"); resp.StatusCode != http.StatusOK || got != "text/event-stream" {
+		t.Fatalf("GET /api/resources/uid-web/logs = %d with Content-Type %q, want 200 text/event-stream", resp.StatusCode, got)
+	}
+	const want = `data: {"lines":[{"pod":"web","container":"app","time":"2026-11-15T18:00:01Z","text":"hello from app"}],"notices":[]}`
+	lines := bufio.NewScanner(resp.Body)
+	found := false
+	for !found && lines.Scan() {
+		found = lines.Text() == want
+	}
+	if !found {
+		t.Errorf("GET /api/resources/uid-web/logs never sent %s (stream ended with %v)", want, lines.Err())
+	}
+
+	// Reading logs asked the cluster for the log, with a read request like
+	// everything else.
+	asked := false
+	for _, request := range cluster.received() {
+		if !strings.HasPrefix(request, "GET ") {
+			t.Errorf("the cluster received %q, want only GET requests", request)
+		}
+		asked = asked || strings.HasPrefix(request, "GET /api/v1/namespaces/default/pods/web/log?container=app&follow=true")
+	}
+	if !asked {
+		t.Errorf("the cluster was never asked for the log of the pod; requests: %v", cluster.received())
+	}
+}
+
+func TestRunKeepsLogsOffWhenTheConfigurationSaysSo(t *testing.T) {
+	cluster := newFakeCluster(t)
+	base := startApp(t, cluster, "logs:\n  enabled: false\n")
+
+	_, detail, err := get(t.Context(), base+"/api/resources/uid-web")
+	if err != nil || !strings.Contains(detail, `"logs":{"available":false,"pods":0,"totalPods":0}`) {
+		t.Errorf("GET /api/resources/uid-web = %s (%v), want it not to offer logs", detail, err)
+	}
+	status, body, err := get(t.Context(), base+"/api/resources/uid-web/logs")
+	if err != nil || status != http.StatusNotFound || !strings.Contains(body, "switched off") {
+		t.Errorf("GET /api/resources/uid-web/logs = %d %s (%v), want 404 saying that logs are switched off", status, body, err)
+	}
+	for _, request := range cluster.received() {
+		if strings.Contains(request, "/log") {
+			t.Errorf("the cluster received %q although logs are switched off", request)
+		}
 	}
 }
 

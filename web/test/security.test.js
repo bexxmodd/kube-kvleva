@@ -186,3 +186,118 @@ test('the colored YAML never turns hostile YAML into markup', () => {
     assert.equal(span.children.length, 0);
   }
 });
+
+// --- Live logs ---------------------------------------------------------------
+// Log text is whatever a container prints: the least trusted text of all.
+
+/** Shows the logs of a resource and adds one hostile event to them. */
+function hostileLogs(drawer) {
+  const mounted = mount();
+  mounted.view.renderDrawer(drawer);
+  mounted.view.openLogs();
+  mounted.view.appendLogs(poison(fx.logBatch([fx.logLine()], [fx.logNotice()])));
+  return mounted;
+}
+
+test('a log line that is markup is shown literally and creates no element', () => {
+  const {view, document, window} = mount();
+  view.renderDrawer({state: 'ready', selection: {uid: fx.UID.pod, container: 'app'}, detail: fx.containerDetail()});
+  view.openLogs();
+
+  view.appendLogs(fx.logBatch([fx.logLine({text: PAYLOAD}), fx.logLine({text: XSS})]));
+
+  const shown = [...document.querySelectorAll('#logs-lines .log-text')];
+  assert.deepEqual(shown.map((e) => e.textContent), [PAYLOAD, XSS]);
+  for (const element of shown) assert.equal(element.children.length, 0);
+  assert.equal(document.querySelectorAll('#logs-lines > *').length, 2, 'two lines, and nothing else');
+  assertInert(document, window);
+});
+
+test('hostile log text, pod and container names, times and notices stay inert', () => {
+  const {document, window} = hostileLogs({state: 'ready', selection: {uid: fx.UID.deployment}, detail: fx.detail()});
+
+  assertInert(document, window);
+  assert.ok(document.querySelector('.log-line .log-text').textContent.includes(XSS));
+  const source = document.querySelector('.log-line .log-source').textContent;
+  assert.equal(source.split(XSS).length - 1, 2, 'the hostile pod name and the hostile container name');
+  assert.ok(document.querySelector('.log-line .log-time').getAttribute('title').includes(XSS));
+  assert.ok(document.querySelector('.log-notice .log-text').textContent.includes(XSS));
+  assert.ok(document.querySelector('.log-notice .log-source').textContent.includes(XSS));
+  for (const element of document.querySelectorAll('#logs-lines > * > *')) {
+    assert.equal(element.children.length, 0, `.${element.className} holds text only`);
+  }
+});
+
+test('hostile container names in the logs of a pod stay inert', () => {
+  const detail = fx.detail({summary: fx.pod()});
+
+  const {document, window} = hostileLogs({state: 'ready', selection: {uid: fx.UID.pod}, detail});
+
+  assertInert(document, window);
+  assert.ok(document.querySelector('.log-line .log-source').textContent.includes(XSS));
+});
+
+test('the logs view of a resource whose details are hostile stays inert', () => {
+  const detail = poison(fx.detail({logs: fx.logs(10, 23)}));
+  // What the backend reports as numbers is shown as text, whatever it is.
+  detail.logs = {available: true, pods: PAYLOAD, totalPods: `${PAYLOAD}!`};
+
+  const {view, document, window} = hostileLogs({state: 'ready', selection: {uid: detail.summary.uid}, detail});
+  view.setLogsStatus('ended');
+
+  assertInert(document, window);
+  assert.ok(document.querySelector('.drawer-name').textContent.includes(XSS));
+  assert.ok(document.getElementById('logs-pods').textContent.includes(XSS));
+  assert.equal(document.getElementById('logs-pods').children.length, 0);
+});
+
+// --- Live logs: the filter ---------------------------------------------------
+// The filter text is what the user typed; the lines it is tried on are
+// whatever a container printed.
+
+test('hostile text in the filter field is only ever a filter', () => {
+  const {view, document, window} = mount();
+  view.renderDrawer({state: 'ready', selection: {uid: fx.UID.pod}, detail: fx.detail({summary: fx.pod()})});
+  view.openLogs();
+  view.appendLogs(fx.logBatch([fx.logLine({text: 'plain'}), fx.logLine({text: PAYLOAD})], [fx.logNotice()]));
+  const field = document.getElementById('logs-filter');
+  const status = document.getElementById('logs-filter-status');
+
+  for (const entered of [PAYLOAD, XSS, `/${PAYLOAD}/`, `/${XSS}/i`, '/<img[^>]*>/', `/(${XSS}/`]) {
+    field.value = entered;
+    field.dispatchEvent(new window.Event('input', {bubbles: true}));
+
+    assertInert(document, window);
+    assert.equal(field.value, entered, 'what was typed stays in the field, as its value');
+    assert.equal(status.children.length, 0, 'what the filter did is stated as text');
+    assert.equal(status.textContent.includes('<'), false, 'and never repeats what was typed');
+    assert.equal(document.querySelector('#logs-lines .log-text').children.length, 0);
+  }
+});
+
+test('hostile log text stays inert while a filter shows or hides it', () => {
+  const {view, document, window} = mount();
+  view.renderDrawer({state: 'ready', selection: {uid: fx.UID.deployment}, detail: fx.detail()});
+  view.openLogs();
+  const field = document.getElementById('logs-filter');
+  const enter = (text) => {
+    field.value = text;
+    field.dispatchEvent(new window.Event('input', {bubbles: true}));
+  };
+
+  // A filter that matches the hostile lines: they arrive and are shown.
+  enter('onerror');
+  view.appendLogs(poison(fx.logBatch([fx.logLine(), fx.logLine({text: 'second'})], [fx.logNotice()])));
+  assertInert(document, window);
+  const lines = [...document.querySelectorAll('#logs-lines > .log-line')];
+  assert.deepEqual(lines.map((line) => line.hidden), [false, false]);
+  assert.ok(lines[0].querySelector('.log-text').textContent.includes(XSS));
+
+  // A filter that hides them, and no filter again.
+  for (const text of ['no such text', '/<script>/', '']) {
+    enter(text);
+    assertInert(document, window);
+    for (const part of document.querySelectorAll('#logs-lines > * > *')) assert.equal(part.children.length, 0);
+  }
+  assert.equal(document.getElementById('logs-filter-status').children.length, 0);
+});

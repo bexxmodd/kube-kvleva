@@ -5,7 +5,8 @@
 // module in a browser starts the app with the real ones (see the bottom).
 //
 // The app is read-only: the only network traffic is GET requests issued by
-// api.js and the EventSource stream.
+// api.js, the EventSource change stream, and the EventSource log stream of
+// the resource whose live logs are shown.
 
 import {createApi} from './api.js';
 import {
@@ -76,6 +77,8 @@ export function startApp(env) {
     onSelect: (selection) => select(selection),
     onReveal: (target) => reveal(target),
     onCloseDrawer: () => closeDrawer(),
+    onViewLogs: () => viewLogs(),
+    onCloseLogs: () => closeLogs(),
     onSidebarWidth: (width) => saveSidebarWidth(env.storage, width),
     onSidebarHidden: (hidden) => saveSidebarHidden(env.storage, hidden),
     onDrawerWidth: (width) => saveDrawerWidth(env.storage, width),
@@ -319,6 +322,61 @@ export function startApp(env) {
   /** Identifies the latest details request; older responses are dropped. */
   let detailsToken = 0;
 
+  /**
+   * Closes the log stream that was opened last (it may have ended by itself
+   * already); null when there is none. There is never more than one.
+   */
+  let closeLogStream = null;
+
+  /** Closes the log stream, if there is one. What the logs view shows stays. */
+  function stopLogStream() {
+    if (closeLogStream === null) return;
+    closeLogStream();
+    closeLogStream = null;
+  }
+
+  /**
+   * Shows the live logs of the selection in place of its detail sections and
+   * opens their stream. Nothing else is fetched. Used again after the stream
+   * ended, it starts over: a new stream begins with the most recent lines.
+   */
+  function viewLogs() {
+    const {drawer} = state;
+    if (drawer.state !== 'ready' || drawer.detail.logs?.available !== true) return;
+    stopLogStream();
+    view.openLogs();
+    closeLogStream = api.logs(drawer.selection, {
+      onBatch: (batch) => {
+        view.setLogsStatus('live');
+        view.appendLogs(batch);
+      },
+      // The stream is not left to reconnect (see api.js): once it ended it
+      // is closed, and only the user starts another.
+      onState: (stream) => view.setLogsStatus(stream === 'ended' ? 'ended' : 'live'),
+    });
+  }
+
+  /** Returns from the live logs to the details and closes their stream. */
+  function closeLogs() {
+    stopLogStream();
+    view.closeLogs();
+  }
+
+  /**
+   * Shows a new state of the drawer for the selection it already shows. A
+   * resource that no longer exists has no logs to follow: their stream is
+   * closed, and what was logged stays readable.
+   * @param {!Object} drawer
+   */
+  function showDrawer(drawer) {
+    state.drawer = drawer;
+    if (drawer.state === 'gone') {
+      stopLogStream();
+      view.setLogsStatus('ended');
+    }
+    renderDrawer();
+  }
+
   async function loadDetails(selection) {
     const token = ++detailsToken;
     let drawer;
@@ -331,11 +389,12 @@ export function startApp(env) {
           {state: 'gone', selection} : {state: 'error', selection, message: err.message};
     }
     if (token !== detailsToken) return;
-    state.drawer = drawer;
-    renderDrawer();
+    showDrawer(drawer);
   }
 
   function select(selection) {
+    // The logs are those of the previous selection.
+    closeLogs();
     state.selection = selection;
     state.drawer = {state: 'loading', selection};
     view.setSelection(selection);
@@ -345,6 +404,7 @@ export function startApp(env) {
 
   function closeDrawer() {
     detailsToken++;
+    closeLogs();
     state.selection = null;
     state.drawer = {state: 'closed'};
     view.setSelection(null);
@@ -430,8 +490,7 @@ export function startApp(env) {
     switch (drawerRefresh(selection?.uid ?? null, change)) {
       case 'gone':
         detailsToken++;
-        state.drawer = {state: 'gone', selection};
-        renderDrawer();
+        showDrawer({state: 'gone', selection});
         break;
       case 'refetch':
         // Not awaited, and without a "Loading…" flash: the drawer keeps what
@@ -490,6 +549,7 @@ export function startApp(env) {
       env.clearTimeout(searchTimer);
       scheduler.stop();
       closeStream();
+      stopLogStream();
     },
   };
 }

@@ -29,6 +29,7 @@ func TestReadOnly(t *testing.T) {
 		{name: "get", method: http.MethodGet, url: "https://cluster/api/v1/namespaces/default/pods/web", wantRequests: 1},
 		{name: "list", method: http.MethodGet, url: "https://cluster/api/v1/pods", wantRequests: 1},
 		{name: "watch", method: http.MethodGet, url: "https://cluster/api/v1/pods?watch=true", wantRequests: 1},
+		{name: "follow_logs", method: http.MethodGet, url: "https://cluster/api/v1/namespaces/default/pods/web/log?follow=true", wantRequests: 1},
 		{name: "head", method: http.MethodHead, url: "https://cluster/version", wantRequests: 1},
 		{name: "create", method: http.MethodPost, url: "https://cluster/api/v1/namespaces/default/pods", wantErr: ErrReadOnly},
 		{name: "update", method: http.MethodPut, url: "https://cluster/api/v1/namespaces/default/pods/web", wantErr: ErrReadOnly},

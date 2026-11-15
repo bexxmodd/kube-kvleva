@@ -220,7 +220,8 @@ Full detail for one resource.
   "missing": [
     {"kindId": "core/Service", "kind": "Service", "namespace": "default",
      "name": "does-not-exist", "relation": "backendRefs"}
-  ]
+  ],
+  "logs": {"available": true, "pods": 3, "totalPods": 3}
 }
 ```
 
@@ -235,6 +236,12 @@ Full detail for one resource.
   `eventsError` is non-empty when events could not be loaded.
 - `outgoing` / `incoming` are resolved references from / to this resource.
   `missing` lists references whose target does not exist.
+- `logs` says whether [live logs](#live-logs) can be opened for this resource.
+  `available` is true when logs are enabled in the configuration and the
+  resource is a Pod or has Pods nested in it (a Deployment, ReplicaSet,
+  StatefulSet, DaemonSet, Job, …). `totalPods` is how many Pods that is and
+  `pods` how many of them the log stream follows (at most 10). When logs are
+  not available all three are `false` / `0`.
 
 `Link` is `{"uid", "kindId", "kind", "namespace", "name", "health", "path", "relation"}`
 (`relation` is omitted in `owners`).
@@ -252,11 +259,64 @@ Detail for one container of a Pod.
   "yaml": "name: app\nimage: nginx:1.27\n…",
   "statusYaml": "ready: true\nstate:\n  running:\n    startedAt: …\n",
   "events": [ /* events whose subject is this container */ ],
-  "eventsError": ""
+  "eventsError": "",
+  "logs": {"available": true, "pods": 1, "totalPods": 1}
 }
 ```
 
+`logs` is as in the resource detail; for a container `pods` and `totalPods`
+are `1` whenever logs are available.
+
 Returns `404` when the Pod or the container is unknown.
+
+## Live logs
+
+```
+GET /api/resources/{uid}/logs
+GET /api/resources/{uid}/containers/{name}/logs
+```
+
+Server-Sent Events (`text/event-stream`) with the container logs of a
+resource, as they are written.
+
+- The first form follows every container of a Pod, or of the Pods nested in
+  the resource (at most 10 Pods, in the order they are listed). The second
+  form follows one container of a Pod.
+- Reading logs is a read request to the cluster (`GET …/pods/{name}/log`), so
+  it passes the read-only guard like everything else. The cluster user needs
+  the `pods/log` permission, which the built-in `view` role includes.
+
+```
+event: logs
+data: {"lines": [{"pod": "web-7c9d-abcde", "container": "app",
+                  "time": "2026-11-15T18:00:00.123456789Z", "text": "listening on :80"}],
+       "notices": [{"pod": "web-7c9d-abcde", "container": "sidecar",
+                    "message": "container \"sidecar\" in pod \"web-7c9d-abcde\" is waiting to start: ContainerCreating"}]}
+
+: heartbeat
+```
+
+- `lines` are in time order within one event. `time` is the timestamp the
+  cluster recorded for the line (RFC 3339 with nanoseconds), or `""`. `text`
+  is plain text: terminal color codes and control characters are removed, and
+  a line longer than 16 KiB is cut and ends in `…`. It is untrusted like every
+  other text from the cluster.
+- `notices` tell why the log of a container cannot be read (it has not
+  started, the cluster refused, …). A notice is not repeated while it stays
+  the same.
+- Both arrays are always present; an event has at least one entry in one of
+  them. Events are sent at most about five times per second.
+- The stream starts with the most recent lines of every container (100 per
+  container, fewer when there are many containers, 500 at most in total) and
+  then follows.
+- It keeps up with the resource: every few seconds it picks up Pods and
+  containers that appeared or restarted and drops those that are gone.
+- A comment line is sent every 15 seconds to keep the connection alive.
+- The stream ends when the resource no longer exists.
+
+Before the stream starts the answer can be `404` with the usual
+`{"error": "…"}` body: the uid or container is unknown, the resource has no
+Pods, or logs are switched off in the configuration (`logs.enabled: false`).
 
 ## `GET /api/stream`
 

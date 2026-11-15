@@ -24,6 +24,7 @@ func TestLoadWithoutFileUsesSafeDefaults(t *testing.T) {
 			"leases.coordination.k8s.io",
 			"endpoints",
 		}},
+		Logs: Logs{Enabled: true},
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("Load(%q) diff (-want +got):\n%s", "", diff)
@@ -85,6 +86,20 @@ func TestParse(t *testing.T) {
 				c.Resources.Exclude = []string{}
 				return c
 			}(),
+		},
+		{
+			name: "logs_switched_off",
+			yaml: "logs:\n  enabled: false\n",
+			want: func() Config {
+				c := Default()
+				c.Logs.Enabled = false
+				return c
+			}(),
+		},
+		{
+			name: "empty_logs_section_keeps_logs_on",
+			yaml: "logs: {}\n",
+			want: Default(),
 		},
 	}
 	for _, tc := range tests {

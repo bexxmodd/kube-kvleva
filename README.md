@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo/kvleva.svg" alt="kvleva logo" width="128" height="128">
+</p>
+
 # kube-kvleva
 
 **kvleva** shows a Kubernetes cluster as a live picture in your browser.
@@ -8,11 +12,14 @@ It serves a web page on your own machine.
 ## What you get
 
 - **A widget for every resource.** This includes custom resources.
-- **Health colors.** The outline of a widget is green, yellow, or red.
+- **Health.** The outline of a widget shows the health of the resource:
+  Healthy, In-Progress, or Failed.
 - **Nesting.** A Deployment contains its ReplicaSets. A ReplicaSet contains
   its Pods. A Pod contains its containers.
 - **Details.** Click a widget to see its YAML, status, events, and
   connections to other resources.
+- **Live logs.** Read the output of a container, a Pod, or all Pods of a
+  workload while they write it.
 - **Live updates.** The picture changes when the cluster changes.
 - **Read-only access.** kvleva cannot change the cluster.
 - **Local access only.** Other machines cannot open the page.
@@ -60,7 +67,7 @@ kubectl --context kind-kvleva apply -f examples/demo.yaml
 make run
 ```
 
-- `examples/demo.yaml` adds sample workloads in all three health colors.
+- `examples/demo.yaml` adds sample workloads of all three health states.
 - `make run` builds kvleva and starts it with `kvleva.example.yaml`. That file
   selects the `kind-kvleva` context.
 - `examples/gateway-misconfigured.yaml` adds Gateway API resources that
@@ -95,8 +102,10 @@ The page has four parts.
 | Open all top-level boxes | Click **Expand all**. |
 | See the details of a resource | Click its widget. The details panel shows the YAML first. Status, conditions, events, and connections follow. |
 | Go to a connected resource | Click its link in the details panel. |
+| Read the live logs of a resource | Click its widget. Then click **View Live Logs** in the details panel. Click **Details** to go back. |
+| Filter the log lines | Type a keyword in the filter field above the log. For a regular expression, type `/pattern/` or `/pattern/i`. |
 | Find a resource by name | Type the name in the search box. |
-| Show only some health colors | Click a health total in the top bar. Or use **Health** in the filters panel. |
+| Show only some health states | Click a health total in the top bar. Or use **Health** in the filters panel. |
 | Hide resource types | Use **Resource types** in the filters panel. Click **▸** to list the types of an API group. Clear the checkbox of a type or of a full group. |
 | Show system resources | Set the **System resources** switch to on. |
 | Change the width of a side panel | Drag its edge. A panel uses a third of the window at most. |
@@ -107,20 +116,23 @@ Good to know:
 
 - System resources are off by default. They are the resources that the cluster
   came with, for example the `kube-system` namespace.
-- Each box shows how many of its resources are green, yellow, and red. You see
-  a problem before you open the box.
+- Each box shows how many of its resources are Healthy, In-Progress, and
+  Failed. You see a problem before you open the box.
 - The browser remembers your filters, panel widths, and theme.
+- **View Live Logs** shows for a container, a Pod, and a resource that
+  contains Pods, such as a Deployment. A resource with many Pods shows the
+  logs of 10 Pods.
 
-## Health colors
+## Health
 
-| Color | Meaning | Examples |
+| Health | Color | Examples |
 |---|---|---|
-| Green | Healthy | A Pod that is running and ready. A Deployment that is fully rolled out. |
-| Yellow | In progress or stuck | A pending Pod. A rollout that is under way. A resource that is terminating. |
-| Red | Failed | `CrashLoopBackOff`. `ImagePullBackOff`. A Node that is not ready. |
+| Healthy | Green | A Pod that is running and ready. A Deployment that is fully rolled out. |
+| In-Progress | Yellow | A pending Pod. A rollout that is under way. A resource that is terminating or stuck. |
+| Failed | Red | `CrashLoopBackOff`. `ImagePullBackOff`. A Node that is not ready. |
 
-A resource without a status, such as a ConfigMap, is green. The full rules are
-in [How kvleva works](docs/how-it-works.md#how-health-is-decided).
+A resource without a status, such as a ConfigMap, is Healthy. The full rules
+are in [How kvleva works](docs/how-it-works.md#how-health-is-decided).
 
 ## Configuration
 
@@ -134,6 +146,7 @@ The configuration file is YAML. All settings are optional.
 | `listen.address` | `127.0.0.1` | The address to listen on. It must be `localhost` or a loopback address. |
 | `listen.port` | `8080` | The local port. |
 | `resources.exclude` | `events`, `events.events.k8s.io`, `leases.coordination.k8s.io`, `endpoints` | Resource types that kvleva does not load. Write `<resource>` or `<resource>.<group>`. Your list replaces the default list. |
+| `logs.enabled` | `true` | Set this to `false` to switch live logs off. |
 
 kvleva does not start if the file contains an unknown setting. This prevents
 silent typing errors.
@@ -146,6 +159,9 @@ silent typing errors.
 - kvleva does not send Secret values to the browser. It replaces them with
   `<redacted>`.
 - The page loads nothing from the internet.
+- Live logs show all the text that your applications write. This text can
+  contain passwords or tokens. To switch live logs off, set `logs.enabled` to
+  `false`.
 
 These guards are in the program, not in the cluster. kvleva uses the
 credentials of your kubeconfig. For a guarantee from the cluster itself, use a
@@ -154,10 +170,13 @@ kubeconfig user that has only a read-only role, such as `view`.
 ## More information
 
 - [How kvleva works](docs/how-it-works.md): system resources, health rules,
-  relationships, safety, large clusters, code layout, known limitations.
+  relationships, live logs, safety, large clusters, code layout, known
+  limitations.
 - [HTTP API](docs/api.md)
 - [Frontend design](docs/frontend.md)
 - [Behavior specifications](features/)
+- [Logo](assets/logo/): the kvleva logo as SVG files in different sizes, for
+  use outside the app.
 
 ## Development
 

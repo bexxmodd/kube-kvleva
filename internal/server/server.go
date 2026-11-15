@@ -56,6 +56,16 @@ type Options struct {
 	// Heartbeat is how often an idle stream is kept alive. Zero means 15
 	// seconds.
 	Heartbeat time.Duration
+	// Logs reads container logs for the live log streams. It may be nil,
+	// which switches logs off: no detail offers them and requests for them
+	// are refused.
+	Logs LogOpener
+	// LogFlushInterval is how long log lines are collected before they are
+	// sent as one event, and LogRetryInterval how often a log stream looks
+	// for Pods and containers that came, went, or restarted. Zero means the
+	// defaults of package podlogs.
+	LogFlushInterval time.Duration
+	LogRetryInterval time.Duration
 }
 
 // New returns the HTTP handler of the web interface and its API.
@@ -72,7 +82,9 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/overview", a.overview)
 	mux.HandleFunc("/api/resources", a.resources)
 	mux.HandleFunc("/api/resources/{uid}", a.resource)
+	mux.HandleFunc("/api/resources/{uid}/logs", a.resourceLogs)
 	mux.HandleFunc("/api/resources/{uid}/containers/{name}", a.container)
+	mux.HandleFunc("/api/resources/{uid}/containers/{name}/logs", a.containerLogs)
 	mux.HandleFunc("/api/stream", a.stream)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "no such API endpoint")
@@ -215,25 +227,31 @@ func (a *api) resources(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) resource(w http.ResponseWriter, r *http.Request) {
-	detail, ok := a.opts.Store.Detail(r.PathValue("uid"))
+	uid := r.PathValue("uid")
+	detail, ok := a.opts.Store.Detail(uid)
 	if !ok {
 		writeError(w, http.StatusNotFound, "this resource no longer exists")
 		return
 	}
+	// A resource that vanished in between simply has no logs.
+	targets, _ := a.opts.Store.LogTargets(uid, maxLogPods)
 	events, eventsError := a.events(r.Context(), detail.Summary, "")
 	writeJSON(w, http.StatusOK, struct {
 		graph.Detail
 		Events      []kube.Event `json:"events"`
 		EventsError string       `json:"eventsError"`
-	}{detail, events, eventsError})
+		Logs        logsInfo     `json:"logs"`
+	}{detail, events, eventsError, a.logsInfo(targets)})
 }
 
 func (a *api) container(w http.ResponseWriter, r *http.Request) {
-	detail, ok := a.opts.Store.Container(r.PathValue("uid"), r.PathValue("name"))
+	uid, name := r.PathValue("uid"), r.PathValue("name")
+	detail, ok := a.opts.Store.Container(uid, name)
 	if !ok {
 		writeError(w, http.StatusNotFound, "this container no longer exists")
 		return
 	}
+	targets, _ := a.opts.Store.ContainerLogTarget(uid, name)
 	// Events about a container are recorded against its Pod and name the
 	// container in their field path.
 	section := "containers"
@@ -246,7 +264,8 @@ func (a *api) container(w http.ResponseWriter, r *http.Request) {
 		graph.ContainerDetail
 		Events      []kube.Event `json:"events"`
 		EventsError string       `json:"eventsError"`
-	}{detail, events, eventsError})
+		Logs        logsInfo     `json:"logs"`
+	}{detail, events, eventsError, a.logsInfo(targets)})
 }
 
 // events returns the events about a resource, limited to those with the

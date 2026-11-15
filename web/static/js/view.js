@@ -11,6 +11,7 @@ import {
   clampDrawerWidth, clampSidebarWidth, DRAWER_MIN_WIDTH, otherTheme, PANEL_KEY_STEP, panelMaxWidth,
   SIDEBAR_MIN_WIDTH,
 } from './layout.js';
+import {compileLogFilter} from './logfilter.js';
 import {childScope, lanes, remaining, scopeKey} from './tree.js';
 import {tokenize} from './yaml.js';
 
@@ -20,11 +21,34 @@ const HEALTHS = ['green', 'yellow', 'red'];
 const GLYPH = {green: '●', yellow: '▲', red: '■'};
 
 /**
+ * What each health is called wherever it is written out. The API and the
+ * stylesheet identify a health by the color it is drawn in; people read a name.
+ */
+const HEALTH_NAME = {green: 'Healthy', yellow: 'In-Progress', red: 'Failed'};
+
+/** The log keeps this many entries; when more arrive, the oldest are dropped. */
+const MAX_LOG_ENTRIES = 2000;
+
+/** A log that is scrolled to within this many pixels of its end follows new lines. */
+const FOLLOW_SLACK_PX = 4;
+
+/** What the logs view says about its stream. */
+const LOGS_STATUS = {connecting: 'Connecting…', live: 'Live', ended: 'The log stream ended.'};
+
+/**
  * @param {string} health Untrusted health value from the API.
  * @return {string} One of the three known health values, or '' for anything else.
  */
 function knownHealth(health) {
   return HEALTHS.includes(health) ? health : '';
+}
+
+/**
+ * @param {string} health Untrusted health value from the API.
+ * @return {string} The name of the health, or 'Unknown' for anything else.
+ */
+function healthName(health) {
+  return HEALTH_NAME[knownHealth(health)] ?? 'Unknown';
 }
 
 /**
@@ -120,8 +144,8 @@ export function createView(doc, handlers) {
             'data-health': health,
             'data-focus-key': `pill:${health}`,
             'aria-pressed': String(shown),
-            'aria-label': `${totals[health]} ${health} resources; ${shown ? 'shown' : 'hidden'}`,
-            'title': `${shown ? 'Hide' : 'Show'} ${health} resources`,
+            'aria-label': `${totals[health]} ${healthName(health)} resources; ${shown ? 'shown' : 'hidden'}`,
+            'title': `${shown ? 'Hide' : 'Show'} ${healthName(health)} resources`,
           },
         }, [dot(health), el('span', {class: 'pill-count', text: totals[health]})]);
       }));
@@ -328,7 +352,7 @@ export function createView(doc, handlers) {
   function rollupEl(rollup) {
     return el('span', {
       class: 'rollup',
-      attrs: {'aria-label': `${rollup.green} green, ${rollup.yellow} yellow, ${rollup.red} red`},
+      attrs: {'aria-label': HEALTHS.map((health) => `${rollup[health]} ${healthName(health)}`).join(', ')},
     }, HEALTHS.map((health) => el('span', {
       class: `rollup-item health-${health}${rollup[health] > 0 ? '' : ' zero'}`,
     }, [dot(health), el('span', {class: 'rollup-count', text: rollup[health]})])));
@@ -366,7 +390,7 @@ export function createView(doc, handlers) {
         'tabindex': '0',
         'role': 'button',
         'title': reason,
-        'aria-label': `${kind} ${container.name}, ${health || 'unknown'}${reason ? `: ${reason}` : ''}`,
+        'aria-label': `${kind} ${container.name}, ${healthName(container.health)}${reason ? `: ${reason}` : ''}`,
       },
     }, [
       dot(container.health),
@@ -395,7 +419,7 @@ export function createView(doc, handlers) {
       // A widget holds further controls (toggle, containers, children), so it
       // is a labelled group rather than a button.
       'role': 'group',
-      'aria-label': `${label}, ${health || 'unknown'}${item.reason ? `: ${item.reason}` : ''}`,
+      'aria-label': `${label}, ${healthName(item.health)}${item.reason ? `: ${item.reason}` : ''}`,
     };
     if (item.reason) attrs.title = item.reason;
 
@@ -460,15 +484,14 @@ export function createView(doc, handlers) {
     const titleEl = el('span', {class: 'area-title', text: title});
     if (namespace) {
       // The header of a namespace box stands for the Namespace object itself.
-      const health = knownHealth(namespace.health);
       titleEl.classList.add('selectable');
       titleEl.setAttribute('data-select-uid', namespace.uid);
       titleEl.setAttribute('data-focus-key', `namespace:${namespace.name}`);
       titleEl.setAttribute('tabindex', '0');
       titleEl.setAttribute('role', 'button');
       titleEl.setAttribute('title', namespace.reason ?? '');
-      titleEl.setAttribute('aria-label',
-          `Namespace ${namespace.name}, ${health || 'unknown'}${namespace.reason ? `: ${namespace.reason}` : ''}`);
+      titleEl.setAttribute('aria-label', `Namespace ${namespace.name}, ${healthName(namespace.health)}` +
+          (namespace.reason ? `: ${namespace.reason}` : ''));
     }
     const node = el('section', {
       class: `area health-${worst(info.rollup)}${open ? ' open' : ''}`,
@@ -623,7 +646,18 @@ export function createView(doc, handlers) {
   byId('collapse-all').addEventListener('click', () => handlers.onCollapseAll());
 
   doc.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') handlers.onCloseDrawer();
+    if (event.key !== 'Escape') return;
+    // In a search field Escape means "clear what I typed". Closing the drawer
+    // there would throw the log away with the filter, so a filter field that
+    // holds text is cleared instead; an empty one lets Escape through.
+    const filter = byId('logs-filter');
+    if (event.target === filter && filter.value !== '') {
+      event.preventDefault();
+      filter.value = '';
+      applyLogFilter();
+      return;
+    }
+    handlers.onCloseDrawer();
   });
 
   canvasEl.addEventListener('animationend', (event) => targetElement(event).classList.remove('flash'));
@@ -633,10 +667,32 @@ export function createView(doc, handlers) {
   /** Identifies what the drawer shows, to tell a refresh from a new selection. */
   let drawerKey = null;
 
+  /** The drawer as it was last rendered. */
+  let drawerModel = {state: 'closed'};
+
+  /** Whether the live logs are shown in place of the detail sections. */
+  let logsOpen = false;
+
+  /** What the stream of the logs view is doing: a key of LOGS_STATUS. */
+  let logsStatus = 'connecting';
+
+  /**
+   * What every entry of the log says about where it comes from: 'none' for
+   * the logs of one container, 'container' for those of a Pod, and 'pod' (the
+   * pod and the container) for everything else.
+   */
+  let logsOrigin = 'pod';
+
+  /**
+   * The filter of the logs view, as compiled from its field. It is view
+   * state: the application neither knows nor keeps it.
+   */
+  let logFilter = compileLogFilter('');
+
   const qualifiedName = (namespace, name) => (namespace ? `${namespace}/${name}` : name);
 
   function healthBadge(health) {
-    return el('span', {class: 'badge'}, [dot(health), doc.createTextNode(` ${knownHealth(health) || 'unknown'}`)]);
+    return el('span', {class: 'badge'}, [dot(health), doc.createTextNode(` ${healthName(health)}`)]);
   }
 
   function note(text, isError = false) {
@@ -786,10 +842,30 @@ export function createView(doc, handlers) {
     ]);
   }
 
+  /**
+   * The button that switches to the live logs. It is offered where the
+   * backend says that logs are available, and not while they are shown.
+   * @param {!Object} detail
+   * @return {?HTMLElement}
+   */
+  function logsAction(detail) {
+    if (logsOpen || detail.logs?.available !== true) return null;
+    const button = el('button', {
+      class: 'view-logs', text: 'View Live Logs', attrs: {'type': 'button', 'data-focus-key': 'view-logs'},
+    });
+    button.addEventListener('click', () => handlers.onViewLogs());
+    return el('div', {class: 'drawer-actions'}, [button]);
+  }
+
   function resourceContent(detail) {
     const {summary} = detail;
+    const head = drawerHead(
+        summary.kind, qualifiedName(summary.namespace, summary.name), summary.health, summary.reason,
+        [logsAction(detail)]);
+    // The logs need the room of the sections; the header stays.
+    if (logsOpen) return [head];
     return [
-      drawerHead(summary.kind, qualifiedName(summary.namespace, summary.name), summary.health, summary.reason),
+      head,
       // Product requirement: the configuration first, the status after it.
       configurationSection(detail.yaml ?? ''),
       statusSection(detail.conditions ?? [], detail.statusYaml ?? ''),
@@ -806,12 +882,16 @@ export function createView(doc, handlers) {
       ['Ready', container.ready ? 'yes' : 'no'],
       ['Restarts', container.restarts],
     ];
+    const kind = container.init ? 'Init container' : 'Container';
+    const head = drawerHead(kind, container.name, container.health, container.reason, [
+      el('dl', {class: 'facts'}, facts.flatMap(([label, value]) =>
+          [el('dt', {text: label}), el('dd', {text: value ?? ''})])),
+      el('p', {class: 'drawer-back'}, spaced([doc.createTextNode('in'), resourceLink(pod, 'back')])),
+      logsAction(detail),
+    ]);
+    if (logsOpen) return [head];
     return [
-      drawerHead(container.init ? 'Init container' : 'Container', container.name, container.health, container.reason, [
-        el('dl', {class: 'facts'}, facts.flatMap(([label, value]) =>
-            [el('dt', {text: label}), el('dd', {text: value ?? ''})])),
-        el('p', {class: 'drawer-back'}, spaced([doc.createTextNode('in'), resourceLink(pod, 'back')])),
-      ]),
+      head,
       configurationSection(detail.yaml ?? ''),
       statusSection([], detail.statusYaml ?? ''),
       eventsSection(detail.events ?? [], detail.eventsError ?? ''),
@@ -829,6 +909,238 @@ export function createView(doc, handlers) {
     }
   }
 
+  // --- Live logs ---------------------------------------------------------------
+  // The logs view is part of the static shell and sits below the part of the
+  // drawer that is rebuilt on every refresh, so its lines survive a refresh.
+  //
+  // SECURITY: log text is the least trusted text of all. Like everything
+  // else it is only ever set as text.
+
+  /** Empties the log, as before the first line arrived. */
+  function emptyLog() {
+    const list = byId('logs-lines');
+    list.replaceChildren();
+    list.scrollTop = 0;
+    byId('logs-dropped').hidden = true;
+    byId('logs-empty').hidden = false;
+  }
+
+  /** @return {boolean} Whether the log is scrolled to its end: the user is reading the newest lines. */
+  function atEnd(list) {
+    return list.scrollHeight - list.scrollTop - list.clientHeight <= FOLLOW_SLACK_PX;
+  }
+
+  /**
+   * Says what the filter did: how many of the log lines it shows, that none
+   * matches, or that it is not a valid regular expression. Notices are not
+   * lines: they are neither filtered nor counted.
+   */
+  function renderLogFilterStatus() {
+    let text = '';
+    if (!logFilter.valid) {
+      text = 'Not a valid regular expression.';
+    } else if (logFilter.active) {
+      const lines = [...byId('logs-lines').children].filter((entry) => entry.classList.contains('log-line'));
+      const shown = lines.filter((line) => !line.hidden).length;
+      text = lines.length > 0 && shown === 0 ?
+          'No line matches the filter.' : `Showing ${shown} of ${lines.length} lines`;
+    }
+    const status = byId('logs-filter-status');
+    // Only a change is written, so that the same statement is not read aloud
+    // again with every line that arrives.
+    if (status.textContent !== text) status.textContent = text;
+  }
+
+  /**
+   * Reads the filter field and shows the log lines that match it: the others
+   * are hidden, not removed, so the filter narrows what the page holds and
+   * asks nobody for anything. A log that was at its end stays there.
+   */
+  function applyLogFilter() {
+    const field = byId('logs-filter');
+    const list = byId('logs-lines');
+    const following = atEnd(list);
+    logFilter = compileLogFilter(field.value);
+    if (logFilter.valid) {
+      field.removeAttribute('aria-invalid');
+    } else {
+      field.setAttribute('aria-invalid', 'true');
+    }
+    for (const entry of list.children) {
+      // The text of a line is its last part; its time and where it comes
+      // from are not searched.
+      if (entry.classList.contains('log-line')) entry.hidden = !logFilter.matches(entry.lastElementChild.textContent);
+    }
+    renderLogFilterStatus();
+    if (following) list.scrollTop = list.scrollHeight;
+  }
+
+  byId('logs-filter').addEventListener('input', () => applyLogFilter());
+
+  /**
+   * Stops showing the logs. A log that is not shown keeps no lines, and its
+   * filter goes with it: the next look at the logs starts unfiltered.
+   */
+  function leaveLogs() {
+    logsOpen = false;
+    emptyLog();
+    byId('logs-filter').value = '';
+    applyLogFilter();
+  }
+
+  /**
+   * Brings everything of the logs view except its lines in line with the
+   * drawer: whether it is shown, its status, whether the stream can be
+   * started again, and how many pods it follows.
+   */
+  function renderLogsFrame() {
+    const logs = drawerModel.state === 'ready' ? drawerModel.detail.logs : undefined;
+    const available = logs?.available === true;
+    byId('drawer').classList.toggle('showing-logs', logsOpen);
+    byId('logs').hidden = !logsOpen;
+    const status = byId('logs-status');
+    const text = LOGS_STATUS[logsStatus] ?? '';
+    // Only a change is written, so that a status is not read aloud again on
+    // every refresh.
+    if (status.textContent !== text) status.textContent = text;
+    // Starting again is the same action as the button in the header, and is
+    // offered under the same condition.
+    byId('logs-restart').hidden = !(logsStatus === 'ended' && available);
+    const some = available && logs.totalPods > logs.pods;
+    const pods = byId('logs-pods');
+    pods.hidden = !some;
+    pods.textContent = some ? `Logs of ${logs.pods} of ${logs.totalPods} pods` : '';
+  }
+
+  /**
+   * @param {{pod: string, container: string}} entry A line or a notice.
+   * @return {string} Where the entry comes from, as far as the selection
+   *     leaves that open; '' when there is nothing to say.
+   */
+  function originText(entry) {
+    switch (logsOrigin) {
+      case 'none': return '';
+      case 'container': return entry.container;
+      default: return [entry.pod, entry.container].filter(Boolean).join('/');
+    }
+  }
+
+  /** @return {?HTMLElement} Where an entry comes from, or null when there is nothing to say. */
+  function originEl(entry) {
+    const origin = originText(entry);
+    return origin ? el('span', {class: 'log-source', text: origin}) : null;
+  }
+
+  /**
+   * One log line: the time of day, where it comes from, and its text.
+   * @param {{pod: string, container: string, time: string, text: string}} line
+   * @return {!HTMLElement}
+   */
+  function logLine(line) {
+    // The time is an RFC 3339 timestamp in UTC: its time of day is cut out,
+    // the whole of it is the tooltip.
+    const time = line.time.slice(11, 19);
+    return el('div', {class: 'log-line'}, spaced([
+      time ? el('span', {class: 'log-time', text: time, attrs: {title: line.time}}) : null,
+      originEl(line),
+      el('span', {class: 'log-text', text: line.text}),
+    ]));
+  }
+
+  /**
+   * Why the log of a container cannot be read. Shown among the lines, at the
+   * moment it was reported, and marked so that it is not taken for a line.
+   * @param {{pod: string, container: string, message: string}} notice
+   * @return {!HTMLElement}
+   */
+  function logNotice(notice) {
+    return el('div', {class: 'log-notice'}, spaced([
+      el('span', {class: 'log-mark', text: '⚠', attrs: {'aria-hidden': 'true'}}),
+      originEl(notice),
+      el('span', {class: 'log-text', text: notice.message}),
+    ]));
+  }
+
+  /**
+   * Adds the lines and notices of one event below those already shown. The
+   * log is bounded: beyond MAX_LOG_ENTRIES the oldest entries are dropped. A
+   * log that is scrolled to its end follows the new lines; one the user
+   * scrolled up in stays where they are reading.
+   * @param {{lines: !Array<!Object>, notices: !Array<!Object>}} batch
+   */
+  function appendLogs({lines, notices}) {
+    if (!logsOpen) return;
+    const list = byId('logs-lines');
+    // Measured before anything is added: is the user reading the newest lines?
+    const following = atEnd(list);
+    const fresh = doc.createDocumentFragment();
+    for (const line of lines) {
+      const element = logLine(line);
+      element.hidden = !logFilter.matches(line.text);
+      fresh.append(element);
+    }
+    for (const notice of notices) fresh.append(logNotice(notice));
+    list.append(fresh);
+    if (list.childElementCount > 0) byId('logs-empty').hidden = true;
+
+    // Lines the filter hides are kept like the others, and dropped like them.
+    const excess = list.childElementCount - MAX_LOG_ENTRIES;
+    if (excess > 0) {
+      const height = list.scrollHeight;
+      for (let i = 0; i < excess; i++) list.firstElementChild.remove();
+      byId('logs-dropped').hidden = false;
+      // What was removed above the reader would move the text under their
+      // eyes: scroll back by as much as went away.
+      if (!following) list.scrollTop = Math.max(0, list.scrollTop - (height - list.scrollHeight));
+    }
+    renderLogFilterStatus();
+    if (following) list.scrollTop = list.scrollHeight;
+  }
+
+  /** @param {string} status What the stream is doing: 'connecting', 'live' or 'ended'. */
+  function setLogsStatus(status) {
+    logsStatus = status;
+    renderLogsFrame();
+  }
+
+  /** @return {boolean} Whether the keyboard focus is on something that is shown. */
+  function focusIsShown() {
+    const active = doc.activeElement;
+    return active !== null && active !== doc.body && active.closest('[hidden]') === null;
+  }
+
+  /**
+   * Shows the live logs of what the drawer shows, in place of the detail
+   * sections, starting with an empty log that is connecting. Calling it
+   * while logs are shown starts over.
+   */
+  function openLogs() {
+    if (drawerModel.state === 'closed') return;
+    const hadFocus = byId('drawer').contains(doc.activeElement);
+    logsOpen = true;
+    logsStatus = 'connecting';
+    logsOrigin = drawerModel.selection.container !== undefined ? 'none' :
+        drawerModel.detail?.summary?.kindId === 'core/Pod' ? 'container' : 'pod';
+    emptyLog();
+    // Starting over keeps the filter; it now has nothing to show yet.
+    applyLogFilter();
+    renderDrawer(drawerModel);
+    // The button that was used is gone or hidden now: keep the focus nearby.
+    if (hadFocus && !focusIsShown()) byId('logs-back').focus({preventScroll: true});
+  }
+
+  /** Returns from the live logs to the detail sections. */
+  function closeLogs() {
+    if (!logsOpen) return;
+    const hadFocus = byId('logs').contains(doc.activeElement);
+    leaveLogs();
+    renderDrawer(drawerModel);
+    if (hadFocus) byId('drawer-body').querySelector('.view-logs')?.focus({preventScroll: true});
+  }
+
+  byId('logs-back').addEventListener('click', () => handlers.onCloseLogs());
+  byId('logs-restart').addEventListener('click', () => handlers.onViewLogs());
+
   /**
    * @param {{state: string, selection?: {uid: string, container?: string},
    *          detail?: !Object, message?: string}} drawer `state` is one of
@@ -837,21 +1149,26 @@ export function createView(doc, handlers) {
   function renderDrawer(drawer) {
     const panel = byId('drawer');
     const body = byId('drawer-body');
+    drawerModel = drawer;
     // The divider of the details panel is only there while the panel is.
     byId('drawer-resizer').hidden = drawer.state === 'closed';
+    const key = drawer.state === 'closed' ? null : `${drawer.selection.uid}\n${drawer.selection.container ?? ''}`;
+    // The logs are those of one selection: they are never shown under another.
+    if (key !== drawerKey && logsOpen) leaveLogs();
     if (drawer.state === 'closed') {
       panel.hidden = true;
       body.replaceChildren();
       drawerKey = null;
+      renderLogsFrame();
       return;
     }
-    const key = `${drawer.selection.uid}\n${drawer.selection.container ?? ''}`;
     // A refresh of what is already shown keeps the reading position; a new
     // selection starts at the top.
     const scrollTop = key === drawerKey ? panel.scrollTop : 0;
     drawerKey = key;
     panel.hidden = false;
     keepFocus(body, () => body.replaceChildren(...drawerContent(drawer)));
+    renderLogsFrame();
     panel.scrollTop = scrollTop;
   }
 
@@ -1037,6 +1354,6 @@ export function createView(doc, handlers) {
   return {
     renderHeader, renderSidebar, renderCanvas, renderDrawer, renderError,
     setSelection, hasElement, reveal, setSidebarWidth, setSidebarHidden, setDrawerWidth, setExpandedGroups,
-    setTheme,
+    setTheme, openLogs, closeLogs, appendLogs, setLogsStatus,
   };
 }

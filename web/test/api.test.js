@@ -221,3 +221,136 @@ test('subscribe reports connection state and can be closed', () => {
   assert.deepEqual(states, ['reconnecting', 'open']);
   assert.equal(source.closed, true);
 });
+
+// --- Live logs ---------------------------------------------------------------
+
+/** Opens a log stream on a fresh api client and records what it reports. */
+function followLogs(selection = {uid: fx.UID.pod}) {
+  FakeEventSource.instances.length = 0;
+  const {fetch, calls} = recordingFetch();
+  const api = apiModule.createApi({fetch, EventSource: FakeEventSource});
+  const batches = [];
+  const states = [];
+  const close = api.logs(selection, {onBatch: (batch) => batches.push(batch), onState: (state) => states.push(state)});
+  return {source: FakeEventSource.instances[0], batches, states, close, fetchCalls: calls};
+}
+
+test('logsUrl names the logs of a resource, or of one container of a Pod', () => {
+  assert.equal(apiModule.logsUrl({uid: 'dep-1'}), '/api/resources/dep-1/logs');
+  assert.equal(apiModule.logsUrl({uid: 'pod-1', container: 'app'}), '/api/resources/pod-1/containers/app/logs');
+});
+
+test('logsUrl percent-encodes the uid and the container name', () => {
+  assert.equal(apiModule.logsUrl({uid: 'a/b?c'}), '/api/resources/a%2Fb%3Fc/logs');
+  assert.equal(apiModule.logsUrl({uid: 'pod/1', container: 'app #1'}),
+      '/api/resources/pod%2F1/containers/app%20%231/logs');
+});
+
+test('logs opens one event stream on the logs URL of the selection and fetches nothing', () => {
+  const resource = followLogs({uid: 'a/b?c'});
+  assert.equal(FakeEventSource.instances.length, 1);
+  assert.equal(resource.source.url, '/api/resources/a%2Fb%3Fc/logs');
+  assert.equal(resource.source.closed, false);
+  assert.deepEqual(resource.fetchCalls, []);
+
+  const container = followLogs({uid: 'pod/1', container: 'app #1'});
+  assert.equal(FakeEventSource.instances.length, 1);
+  assert.equal(container.source.url, '/api/resources/pod%2F1/containers/app%20%231/logs');
+});
+
+test('a logs event delivers its lines and notices', () => {
+  const {source, batches} = followLogs();
+  const first = fx.logBatch([fx.logLine(), fx.logLine({container: 'sidecar', text: 'proxy ready'})]);
+  const second = fx.logBatch([], [fx.logNotice()]);
+
+  source.logs(first);
+  source.logs(second);
+
+  assert.deepEqual(batches, [first, second]);
+});
+
+test('a logs event that is not the documented JSON is ignored', () => {
+  const {source, batches, states} = followLogs();
+
+  for (const data of ['{not json', '', 'null', '42', '"text"', '[]', '{"lines": "x", "notices": 7}',
+                      '{"lines": [], "notices": []}']) {
+    source.emit('logs', {data});
+  }
+  source.emit('logs', {});
+
+  assert.deepEqual(batches, []);
+  assert.deepEqual(states, [], 'and the stream is not given up for it');
+  assert.equal(source.closed, false);
+});
+
+test('entries of a logs event that are not objects are skipped and missing fields are empty text', () => {
+  const {source, batches} = followLogs();
+
+  source.logs({
+    lines: [null, 'x', {text: 'only text'}, {pod: 1, container: {}, time: 5, text: ['no']}, fx.logLine()],
+    notices: [7, {message: 'only a message'}],
+  });
+  source.logs({notices: [fx.logNotice()]});
+
+  assert.deepEqual(batches, [
+    {
+      lines: [
+        {pod: '', container: '', time: '', text: 'only text'},
+        {pod: '', container: '', time: '', text: ''},
+        fx.logLine(),
+      ],
+      notices: [{pod: '', container: '', message: 'only a message'}],
+    },
+    {lines: [], notices: [fx.logNotice()]},
+  ]);
+});
+
+test('logs reports when the stream is open', () => {
+  const {source, states} = followLogs();
+
+  source.emit('open');
+
+  assert.deepEqual(states, ['open']);
+});
+
+test('a log stream that fails is closed for good, since a reconnect would repeat lines, and its end is reported', () => {
+  const {source, states, batches} = followLogs();
+
+  source.emit('error');
+
+  assert.equal(source.closed, true, 'EventSource must not reconnect on its own');
+  assert.deepEqual(states, ['ended']);
+
+  source.emit('error');
+  source.logs(fx.logBatch());
+  assert.deepEqual(states, ['ended'], 'the end is reported once');
+  assert.deepEqual(batches, []);
+});
+
+test('the function that logs returns closes the stream, and nothing is reported afterwards', () => {
+  const {source, states, batches, close} = followLogs();
+
+  close();
+
+  assert.equal(source.closed, true);
+  source.logs(fx.logBatch());
+  source.emit('open');
+  source.emit('error');
+  assert.deepEqual(batches, []);
+  assert.deepEqual(states, []);
+});
+
+test('logs works without a state callback', () => {
+  FakeEventSource.instances.length = 0;
+  const api = apiModule.createApi({fetch: recordingFetch().fetch, EventSource: FakeEventSource});
+  const batches = [];
+
+  api.logs({uid: fx.UID.pod}, {onBatch: (batch) => batches.push(batch)});
+  const [source] = FakeEventSource.instances;
+  source.emit('open');
+  source.logs(fx.logBatch());
+  source.emit('error');
+
+  assert.deepEqual(batches, [fx.logBatch()]);
+  assert.equal(source.closed, true);
+});

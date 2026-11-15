@@ -104,8 +104,13 @@ test('three health pills show the cluster totals', () => {
   assert.deepEqual(pills.map((p) => p.querySelector('.pill-count').textContent), ['310', '4', '1']);
   for (const pill of pills) {
     assert.ok(pill.classList.contains(`health-${pill.dataset.health}`));
-    assert.match(pill.getAttribute('aria-label'), new RegExp(pill.dataset.health));
   }
+  assert.deepEqual(pills.map((p) => p.getAttribute('aria-label')), [
+    '310 Healthy resources; shown', '4 In-Progress resources; shown', '1 Failed resources; shown',
+  ], 'health is named, not only colored');
+  assert.deepEqual(pills.map((p) => p.title), [
+    'Hide Healthy resources', 'Hide In-Progress resources', 'Hide Failed resources',
+  ]);
 });
 
 test('pills reflect the health filter and toggle it when clicked', () => {
@@ -115,6 +120,8 @@ test('pills reflect the health filter and toggle it when clicked', () => {
   view.renderHeader(header({filters: noRed}));
 
   assert.deepEqual($$('#pills .pill').map((p) => p.getAttribute('aria-pressed')), ['true', 'true', 'false']);
+  assert.equal($$('#pills .pill')[2].getAttribute('aria-label'), '1 Failed resources; hidden');
+  assert.equal($$('#pills .pill')[2].title, 'Show Failed resources');
 
   $$('#pills .pill')[2].click();
   assert.deepEqual(calls, [['onHealthToggle', 'red']]);

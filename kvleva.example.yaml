@@ -32,3 +32,10 @@ resources:
     - events.events.k8s.io
     - leases.coordination.k8s.io
     - endpoints
+
+logs:
+  # Whether the details of pods, containers, and workloads offer "View Live
+  # Logs". Logs hold whatever the applications print, which can include
+  # passwords or tokens. Set this to false to keep logs out of kvleva: the
+  # button is then not offered and requests for logs are refused.
+  enabled: true

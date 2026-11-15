@@ -20,8 +20,8 @@ The backend contract is [api.md](api.md). Behavior is specified in
 3. **Strict CSP.** The server sends `default-src 'self'`. Therefore: no inline
    `<script>`, no inline `<style>`, no `style="…"` attributes in markup, no
    remote fonts, images, or scripts (the one font the app uses ships with it,
-   in `static/fonts`). Setting `element.style.foo = …` from JavaScript is
-   fine.
+   in `static/fonts`, and so does its logo, in `static/img`). Setting
+   `element.style.foo = …` from JavaScript is fine.
 4. **Scale.** A cluster can hold tens of thousands of nodes and pods. The DOM
    must stay bounded: nothing is rendered until its container is opened, every
    list is paginated, and refreshes only refetch what is currently open.
@@ -35,7 +35,7 @@ The backend contract is [api.md](api.md). Behavior is specified in
 │ Filters       │ ┌ cluster: kind-kvleva ────────────────┐ │ Details       │
 │  Health       │ │ ┌ Nodes (3) ───────────────────────┐ │ │  Deployment   │
 │  Resource     │ │ │ [node] [node] [node]             │ │ │  default/web  │
-│  types        │ │ └──────────────────────────────────┘ │ │  ● green …    │
+│  types        │ │ └──────────────────────────────────┘ │ │  ● Healthy …  │
 │   ☑ Pod   42  │ │ ┌ Cluster-wide (180) ──────────────┐ │ │               │
 │   ☑ Service 9 │ │ └──────────────────────────────────┘ │ │ Configuration │
 │   ☐ Secret 12 │ │ ┌ namespace: default ──────────────┐ │ │  (YAML)       │
@@ -50,7 +50,7 @@ The backend contract is [api.md](api.md). Behavior is specified in
 
 ### Header
 
-- App name, cluster name, server version, sync indicator (`sync.ready`,
+- Logo and app name, cluster name, server version, sync indicator (`sync.ready`,
   `kindsSynced/kindsTotal`, and a warning with the messages in `sync.errors`).
 - **System resources switch**, right after the cluster information (left to
   middle of the header). Off by default. Off: system resources are not
@@ -70,7 +70,8 @@ The backend contract is [api.md](api.md). Behavior is specified in
 
 ### Sidebar (filters)
 
-- **Health**: three checkboxes (green, yellow, red). All checked means no
+- **Health**: three checkboxes, labelled Healthy, In-Progress, and Failed
+  (`green`, `yellow`, `red` in the API). All checked means no
   `health` parameter is sent.
 - **Resource types**: the entries of `overview.kinds`, **grouped by API
   group**. The `core` group comes first, the others alphabetically; inside a
@@ -145,7 +146,8 @@ A widget is a clickable box for one resource:
   Clicking a container selects that container.
 - Clicking a widget (not its toggle) selects it and opens the drawer.
 - Keyboard: widgets are focusable; `Enter`/`Space` selects, `Escape` closes the
-  drawer.
+  drawer (except in the log filter field while it holds text, where it clears
+  the filter).
 
 ### Pagination
 
@@ -197,6 +199,102 @@ For a container selection the drawer shows the container header, its `yaml`,
 
 A `404` (resource deleted) shows "This resource no longer exists."
 
+**Live logs.** When the details say that logs can be opened (`logs.available`
+is `true`; a missing `logs` field means no), the header of the drawer, of a
+resource and of a container alike, has a `View Live Logs` button
+(`.view-logs`). It shows the logs view (`#logs`) in the drawer, in place of
+the sections, which need the room; the header stays. The logs view is part of
+the static shell and sits outside the part of the drawer that a refresh
+rebuilds. Top to bottom:
+
+- `← Details` (`#logs-back`) returns to the sections and closes the stream.
+- A status (`#logs-status`, `role="status"`): `Connecting…`, then `Live` once
+  the stream is open or its first event arrived, and `The log stream ended.`
+  when it failed or the server ended it. After that, and while the details
+  still say that logs are available, `View Live Logs` (`#logs-restart`)
+  starts over with an empty log.
+- The filter field (`#logs-filter`, a search field named "Filter log lines")
+  and what the filter did (`#logs-filter-status`, `role="status"`); see
+  [Filtering the log](#filtering-the-log).
+- `Logs of 10 of 23 pods` (`#logs-pods`) when `logs.totalPods` is greater
+  than `logs.pods`.
+- `No log lines yet.` (`#logs-empty`) until the first line or notice.
+- The log (`#logs-lines`, `role="log"`): it scrolls by itself, takes the
+  height that is left, and can be focused. One element per line, oldest
+  first. A line (`.log-line`) shows the time of day (`HH:MM:SS`, cut out of
+  the UTC timestamp, which is the tooltip; nothing when `time` is empty),
+  where it comes from, and its text in the monospace font with its spaces
+  kept. Where it comes from depends on the selection: nothing for a
+  container, the container for a Pod, `pod/container` for everything else. A
+  notice (`.log-notice`: muted, italic, led by `⚠`) is shown among the lines,
+  after the lines of its event.
+
+Limits and lifecycle:
+
+- **Bounded.** The log keeps at most 2000 entries (lines and notices). When
+  more arrive, the oldest are removed and `Older lines were dropped.`
+  (`#logs-dropped`) is shown above the log. Each event is appended; the log
+  is never rebuilt.
+- **Following.** A log that is scrolled to its end (within 4 px) stays at its
+  end when lines arrive. A log the user scrolled up in does not move, also
+  not when old lines are removed above what they read.
+- **One stream.** `api.js` opens an `EventSource` on the logs endpoint of the
+  selection, and `main.js` holds at most one. It is closed by `Details`, by
+  selecting anything (the same resource included), by closing the drawer
+  (button or `Escape`), when the resource no longer exists, and when the app
+  stops. Unlike the change stream it is never left to reconnect, because a
+  new connection starts with the recent lines again: on an error it is
+  closed and the status says that it ended.
+- **Refresh.** A live refresh of the drawer updates the header and leaves the
+  logs view, its lines, and its stream alone. That also holds when the
+  refreshed details say that logs are no longer available, or cannot be
+  loaded. When the resource was deleted the drawer says so and the stream is
+  closed; what was logged stays readable until `Details` is used.
+- Opening logs fetches nothing else. Log text is untrusted like everything
+  else from the cluster and is only ever set as text.
+
+#### Filtering the log
+
+The filter field narrows the log lines that the page already holds. It
+requests nothing, leaves the stream alone, and is not saved. The log is
+filtered again on every keystroke.
+
+- **Keyword.** Any text is a keyword: a line is shown when its text contains
+  it. Upper and lower case are the same, and every character stands for
+  itself (`a.b` does not match `axb`). Spaces around the keyword are part of
+  it; a field that holds only spaces is no filter.
+- **Regular expression.** `/pattern/` is a regular expression and
+  `/pattern/i` one that ignores case. The text is taken as a regular
+  expression when it starts with `/`, has a later `/` after at least one
+  character (the last `/` closes the pattern), and is followed by nothing
+  but regular-expression flag letters (`d g i m s u v y`). So `/var/log` and
+  `/api/v1/pods` are keywords. Spaces before and after a regular expression
+  are ignored. Only the flag `i` is accepted: any other
+  flag, or a pattern that is not a regular expression, makes the filter
+  invalid.
+- **What is filtered.** The text of a log line; not its time and not where
+  it comes from. Notices are never hidden. Lines that do not match are
+  hidden, not removed: they still count towards the 2000 entries the log
+  keeps. Lines that arrive later are tested as they arrive.
+- **What is said** (`#logs-filter-status`, written only when it changes):
+  `Showing 2 of 4 lines` (lines only, kept up to date as lines arrive and
+  are dropped), `No line matches the filter.`, or
+  `Not a valid regular expression.`. An invalid filter hides nothing and
+  marks the field (`aria-invalid="true"`). `No log lines yet.` keeps its
+  meaning: nothing has arrived.
+- **How long it lasts.** The filter stays through a refresh of the drawer
+  and when the stream is started again. It is emptied when the logs view is
+  left (`Details`, another selection, closing the drawer), so every look at
+  the logs starts unfiltered.
+- **Escape.** In the filter field, `Escape` clears a field that holds text
+  and leaves the drawer open. In the empty field, as everywhere else, it
+  closes the drawer.
+- **Reading position.** A log that was at its end before the filter changed
+  is at its end afterwards. Otherwise the position is not corrected.
+- Matching lives in `static/js/logfilter.js` (`compileLogFilter`), which
+  does not touch the page; `view.js` applies it. The filter is view state:
+  `main.js` does not know it. Matches are not highlighted.
+
 The drawer is **resizable** like the sidebar: a divider on its left edge
 (`#drawer-resizer`, only present while the drawer is open) can be dragged, or
 moved with the arrow keys while focused (left widens, right narrows). The
@@ -223,17 +321,19 @@ focus. If the stream disconnects, show "reconnecting…" in the header and let
 
 | File | Responsibility | DOM? |
 |---|---|---|
-| `static/index.html` | Static shell. | – |
+| `static/index.html` | Static shell, including the logs view of the drawer. | – |
 | `static/css/app.css` | All styling. Every color is a CSS variable, defined once per theme. | – |
 | `static/fonts/InterVariable.woff2` | The typeface (Inter 4.1, variable), with its licence in `Inter-LICENSE.txt`. | – |
+| `static/img/logo.svg` | The logo: shown in front of the app name and in the browser tab. | – |
 | `static/js/theme-boot.js` | The only script that is not a module: loaded in the `<head>`, it applies a remembered day theme before the page is drawn. | yes |
-| `static/js/api.js` | URL building and `fetch` wrappers for every endpoint; stream subscription. | no (takes `fetch`/`EventSource` by injection) |
+| `static/js/api.js` | URL building and `fetch` wrappers for every endpoint; subscription to the change stream; opening a log stream. | no (takes `fetch`/`EventSource` by injection) |
 | `static/js/filters.js` | Filter state, (de)serialization, mapping to query parameters. | no |
 | `static/js/layout.js` | Widths of the two side panels (limits), whether the filters panel is hidden, which API groups are expanded, and the theme; persistence of all five. | no |
+| `static/js/logfilter.js` | The filter of the logs view: turns what was typed (a keyword or `/regex/`) into a test for a log line. | no |
 | `static/js/tree.js` | View model: open scopes, pages, lanes, initial expansion, refresh planning, nearest rendered ancestor. | no |
 | `static/js/yaml.js` | Tokenizing YAML lines for coloring. | no |
-| `static/js/view.js` | Building and updating DOM for canvas, sidebar, header, drawer. | yes |
-| `static/js/main.js` | Wiring: state, events, refresh loop. | yes |
+| `static/js/view.js` | Building and updating DOM for canvas, sidebar, header, drawer, and the logs view. | yes |
+| `static/js/main.js` | Wiring: state, events, refresh loop, the one log stream. | yes |
 
 Keep logic in the DOM-free modules so it is unit-testable; `view.js` is tested
 with jsdom. Tests live in `web/test/*.test.js` and are **not** embedded.
@@ -266,6 +366,41 @@ cue):
 | yellow | `#d29922` | `#855800` |
 | red | `#f85149` | `#c5202b` |
 
+**Logo.** "Kvleva" (კვლევა) is Georgian for examining, researching. The logo
+(`static/img/logo.svg`) is a K with a magnifying glass where its arms meet:
+the lower arm of the K is the handle of the glass, and the lens catches a
+little light. It sits on a dark tile of its own, so it looks the same in both
+themes and in the browser tab. The header shows it in front of the app name;
+the stylesheet draws it there (`.logo`), because the page has no `<img>` of
+its own: an `<img>` found in the page can only have come from hostile cluster
+data, and `test/security.test.js` relies on that. The header shows the logo
+28 px high next to the app name, which is the largest text of the page
+(20 px).
+
+Copies of the logo for use outside the app are in
+[`assets/logo/`](../assets/logo/): one that scales to any size, and one for
+each of a range of fixed sizes. They are made from `static/img/logo.svg` with
+`make logo`, and `test/logo.test.js` fails while a copy differs from it. The
+README of the project starts with the logo from that folder.
+
+**Colors.** The interface takes its colors from the logo, and
+`test/shell.test.js` checks that the two stay together: every color of the
+logo is a color of a theme, and the accent of each theme is a blue of the
+logo.
+
+| Color of the logo | In the interface |
+|---|---|
+| `#0b111b` tile | night `--bg` and `--on-accent` |
+| `#56c2f0` bright blue (stem, rim of the glass, handle) | night `--accent` |
+| `#0b6aa8` deep blue (upper arm) | day `--accent` |
+| `#1a2535` lens | night `--panel-raised` |
+| `#e6edf5` light on the lens | night `--text` |
+
+The other surfaces, lines, and text colors of both themes are tinted toward
+the same blue. The logo has no green, yellow, or red: those hues belong to
+health alone, so the accent (selection, focus, links, switches) is never
+mistaken for a health.
+
 ## Implementation notes
 
 Where the implementation settles something this document leaves open, or
@@ -288,8 +423,14 @@ departs from it:
 - **Pods shown twice** (in their namespace and under an opened node): reveal
   goes to the instance in the namespace.
 - **Dots** differ in shape as well as color: ● green, ▲ yellow, ■ red.
+- **Health names**: wherever a health is written out (the Health filter, the
+  badge in the drawer, tooltips of the health pills, and every `aria-label`)
+  it is called Healthy (`green`), In-Progress (`yellow`), or Failed (`red`);
+  a value the page does not know is called Unknown. The API values, CSS
+  classes, and saved filters keep the color names.
 - **Kind identifiers the UI depends on**: `core/Node` (falls back to the Nodes
-  area) and `core/Namespace` (maps to the `ns:<name>` box).
+  area), `core/Namespace` (maps to the `ns:<name>` box), and `core/Pod` (its
+  log lines name the container only, not the pod).
 
 The frontend has been exercised with jsdom, including end to end against the
 real backend, but layout and styling can only be judged in a browser.

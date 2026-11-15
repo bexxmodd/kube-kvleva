@@ -5,6 +5,20 @@ Feature: Resource health colors
 
   Rule: Green means configured and reconciled, yellow means in progress or stuck, red means failed
 
+    The colors are how health is drawn. In words, the interface calls green
+    "Healthy", yellow "In-Progress", and red "Failed".
+
+  Scenario Outline: Health is named in words wherever it is written out
+    Given a resource that is outlined in <color>
+    When its health is written out, in its details or in a filter
+    Then it is called "<name>"
+
+    Examples:
+      | color  | name        |
+      | green  | Healthy     |
+      | yellow | In-Progress |
+      | red    | Failed      |
+
   Scenario Outline: Pod health follows what its containers are doing
     Given a pod that is <situation>
     When its health is evaluated

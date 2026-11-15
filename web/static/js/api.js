@@ -64,6 +64,57 @@ export function overviewUrl(query = {}) {
 }
 
 /**
+ * Builds the URL of the details of a resource, or of one container of a Pod.
+ * @param {{uid: string, container?: string}} selection
+ * @return {string}
+ */
+function detailUrl({uid, container}) {
+  const resource = `/api/resources/${encodeURIComponent(uid)}`;
+  return container === undefined ? resource : `${resource}/containers/${encodeURIComponent(container)}`;
+}
+
+/**
+ * Builds the URL of the live logs of a resource, or of one container of a Pod.
+ * @param {{uid: string, container?: string}} selection
+ * @return {string}
+ */
+export function logsUrl(selection) {
+  return `${detailUrl(selection)}/logs`;
+}
+
+/** @return {string} `value` when it is text, otherwise no text. */
+function text(value) {
+  return typeof value === 'string' ? value : '';
+}
+
+/** @return {!Array<!Object>} The objects among the entries of `value`; none when it is not a list. */
+function objects(value) {
+  return Array.isArray(value) ? value.filter((entry) => entry !== null && typeof entry === 'object') : [];
+}
+
+/**
+ * Normalizes the payload of a `logs` event, so that what is passed on has the
+ * shape of the contract whatever was sent.
+ * @param {string} data Raw event data.
+ * @return {?{lines: !Array<{pod: string, container: string, time: string, text: string}>,
+ *           notices: !Array<{pod: string, container: string, message: string}>}}
+ *     Null when the event carries nothing that can be shown.
+ */
+function parseLogs(data) {
+  let raw = null;
+  try {
+    raw = JSON.parse(data);
+  } catch {
+    return null;
+  }
+  const lines = objects(raw?.lines).map((line) =>
+      ({pod: text(line.pod), container: text(line.container), time: text(line.time), text: text(line.text)}));
+  const notices = objects(raw?.notices).map((notice) =>
+      ({pod: text(notice.pod), container: text(notice.container), message: text(notice.message)}));
+  return lines.length + notices.length > 0 ? {lines, notices} : null;
+}
+
+/**
  * Normalizes the payload of a `change` event. Anything that does not look like
  * the contract degrades to "refetch everything visible".
  * @param {string} data Raw event data.
@@ -114,10 +165,42 @@ export function createApi({fetch, EventSource}) {
 
     resources: async (scope, query, pageRequest) => get(resourcesUrl(scope, query, pageRequest)),
 
-    resource: (uid) => get(`/api/resources/${encodeURIComponent(uid)}`),
+    resource: (uid) => get(detailUrl({uid})),
 
-    container: (uid, name) =>
-        get(`/api/resources/${encodeURIComponent(uid)}/containers/${encodeURIComponent(name)}`),
+    container: (uid, name) => get(detailUrl({uid, container: name})),
+
+    /**
+     * Opens the live logs of a resource, or of one container of a Pod.
+     * `onBatch` hears the lines and notices of every event; `onState` hears
+     * 'open' and, once, 'ended'. Unlike the change stream this one is not
+     * left to reconnect: a new connection starts with the most recent lines
+     * again, which would repeat what was already delivered. So when the
+     * stream fails or the server ends it, it is closed for good.
+     * @param {{uid: string, container?: string}} selection
+     * @param {{onBatch: function(!Object), onState?: function(string)}} callbacks
+     * @return {function()} Closes the stream; nothing is reported afterwards.
+     */
+    logs(selection, {onBatch, onState = () => {}}) {
+      const source = new EventSource(logsUrl(selection));
+      let open = true;
+      const close = () => {
+        open = false;
+        source.close();
+      };
+      source.addEventListener('logs', (event) => {
+        const batch = open ? parseLogs(event.data) : null;
+        if (batch) onBatch(batch);
+      });
+      source.addEventListener('open', () => {
+        if (open) onState('open');
+      });
+      source.addEventListener('error', () => {
+        if (!open) return;
+        close();
+        onState('ended');
+      });
+      return close;
+    },
 
     /**
      * Opens the change stream. EventSource reconnects on its own; `onState`

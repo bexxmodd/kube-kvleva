@@ -20,6 +20,7 @@ type Config struct {
 	Cluster   Cluster   `json:"cluster"`
 	Listen    Listen    `json:"listen"`
 	Resources Resources `json:"resources"`
+	Logs      Logs      `json:"logs"`
 }
 
 // Cluster selects the Kubernetes cluster to visualize.
@@ -52,8 +53,16 @@ type Resources struct {
 	Exclude []string `json:"exclude"`
 }
 
+// Logs controls whether container logs can be viewed.
+type Logs struct {
+	// Enabled says whether the web interface offers live container logs.
+	// Logs hold whatever the applications print, which can include
+	// credentials, so they can be switched off.
+	Enabled bool `json:"enabled"`
+}
+
 // Default returns the configuration used when no file is given: serve on
-// localhost and leave out resource types that only add noise.
+// localhost, leave out resource types that only add noise, and offer logs.
 func Default() Config {
 	return Config{
 		Listen: Listen{Address: "127.0.0.1", Port: 8080},
@@ -63,6 +72,7 @@ func Default() Config {
 			"leases.coordination.k8s.io",
 			"endpoints",
 		}},
+		Logs: Logs{Enabled: true},
 	}
 }
 

@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/version"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
@@ -37,6 +40,10 @@ type Client struct {
 
 	discovery discovery.DiscoveryInterface
 	dynamic   dynamic.Interface
+	// http and server are for the one thing that is read as a plain
+	// stream rather than as objects: container logs.
+	http   *http.Client
+	server *url.URL
 }
 
 // RESTConfig returns the connection settings for the cluster selected by
@@ -87,6 +94,17 @@ func Connect(ctx context.Context, cluster config.Cluster) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cluster %q: %w", contextName, err)
 	}
+	// Built from the same settings, so it carries the same credentials and
+	// the same read-only transport. It has no overall timeout, which a
+	// followed log needs.
+	httpClient, err := rest.HTTPClientFor(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("cluster %q: %w", contextName, err)
+	}
+	server, _, err := rest.DefaultServerURL(restConfig.Host, restConfig.APIPath, schema.GroupVersion{}, true)
+	if err != nil {
+		return nil, fmt.Errorf("cluster %q: %w", contextName, err)
+	}
 	body, err := discoveryClient.RESTClient().Get().AbsPath("/version").Do(ctx).Raw()
 	if err != nil {
 		return nil, fmt.Errorf("connecting to cluster %q at %s: %w", contextName, restConfig.Host, err)
@@ -99,6 +117,8 @@ func Connect(ctx context.Context, cluster config.Cluster) (*Client, error) {
 		Info:      Info{Name: contextName, Server: restConfig.Host, Version: serverVersion.GitVersion},
 		discovery: discoveryClient,
 		dynamic:   dynamicClient,
+		http:      httpClient,
+		server:    server,
 	}, nil
 }
 

@@ -154,10 +154,27 @@ export function overview(overrides = {}) {
   };
 }
 
-/** A /api/resources/{uid} response for the Deployment. */
+/**
+ * The `logs` field of a detail response: how many Pods the log stream follows,
+ * out of how many there are. Without Pods there are no logs.
+ */
+export function logs(pods = 0, totalPods = pods) {
+  return {available: pods > 0, pods, totalPods};
+}
+
+/** How many Pods the sample resources that run containers have; every other kind has none. */
+const PODS_BY_KIND = {'core/Pod': 1, 'apps/ReplicaSet': 3, 'apps/Deployment': 3};
+
+/**
+ * A /api/resources/{uid} response, for the Deployment unless `overrides`
+ * names another summary. Its `logs` follow from the kind, as in the backend:
+ * a Pod and what has Pods nested in it offer logs, a ConfigMap does not.
+ */
 export function detail(overrides = {}) {
+  const about = overrides.summary ?? deployment();
   return {
-    summary: deployment(),
+    summary: about,
+    logs: logs(PODS_BY_KIND[about.kindId] ?? 0),
     yaml: 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n  namespace: default\nspec:\n  replicas: 3\n',
     statusYaml: 'replicas: 3\nreadyReplicas: 2\n',
     conditions: [
@@ -199,6 +216,7 @@ export function containerDetail(overrides = {}) {
        count: 1, firstSeen: '2026-11-14T17:00:00Z', lastSeen: '2026-11-14T17:00:00Z', source: 'kubelet'},
     ],
     eventsError: '',
+    logs: logs(1),
     ...overrides,
   };
 }
@@ -206,4 +224,26 @@ export function containerDetail(overrides = {}) {
 /** The payload of a `change` event on /api/stream. */
 export function change(overrides = {}) {
   return {revision: 1043, changed: [], deleted: [], overflow: false, ...overrides};
+}
+
+/** One line of a `logs` event on a log stream. */
+export function logLine(overrides = {}) {
+  return {
+    pod: 'web-7d4b9c-abcde', container: 'app', time: '2026-11-15T18:00:00.123456789Z', text: 'listening on :80',
+    ...overrides,
+  };
+}
+
+/** One notice of a `logs` event: why the log of a container cannot be read. */
+export function logNotice(overrides = {}) {
+  return {
+    pod: 'web-7d4b9c-abcde', container: 'sidecar',
+    message: 'container "sidecar" in pod "web-7d4b9c-abcde" is waiting to start: ContainerCreating',
+    ...overrides,
+  };
+}
+
+/** The payload of a `logs` event on a log stream. */
+export function logBatch(lines = [logLine()], notices = []) {
+  return {lines, notices};
 }

@@ -95,13 +95,18 @@ func run(ctx context.Context, configPath string) error {
 		client.Watcher(store, kube.WatcherOptions{Exclude: cfg.Resources.Exclude}).Run(ctx)
 	})
 
+	options := server.Options{
+		Cluster: client.Info,
+		Store:   store,
+		Events:  client,
+		Assets:  assets,
+	}
+	// Left unset, the server neither offers nor serves logs.
+	if cfg.Logs.Enabled {
+		options.Logs = client
+	}
 	srv := &http.Server{
-		Handler: server.New(server.Options{
-			Cluster: client.Info,
-			Store:   store,
-			Events:  client,
-			Assets:  assets,
-		}),
+		Handler:           server.New(options),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Requests end with the app, which lets open change streams finish
 		// promptly on shutdown.

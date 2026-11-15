@@ -184,6 +184,114 @@ test('the stylesheet caps the details panel at a third of the window too', () =>
   assert.doesNotMatch(rule, /50vw/, 'the old half-window cap is gone');
 });
 
+test('the details panel holds the live logs view, which starts hidden', () => {
+  const doc = shell();
+
+  const logs = doc.getElementById('logs');
+  assert.ok(logs, '#logs is missing');
+  assert.ok(doc.getElementById('drawer').contains(logs), 'the logs are shown in the details panel');
+  assert.equal(logs.hidden, true, 'the details come first; logs are shown on request');
+  assert.ok(logs.getAttribute('aria-label'));
+  // Outside the part of the panel that is rebuilt on every refresh of the
+  // details, so that the lines survive one.
+  assert.equal(doc.getElementById('drawer-body').contains(logs), false);
+  const parts = ['logs-back', 'logs-status', 'logs-restart', 'logs-pods', 'logs-dropped', 'logs-empty', 'logs-lines'];
+  for (const id of parts) {
+    assert.ok(logs.contains(doc.getElementById(id)), `#${id} is missing from the logs view`);
+  }
+});
+
+test('the live logs view has its controls, its status and a log that the keyboard can scroll', () => {
+  const doc = shell();
+  const byId = (id) => doc.getElementById(id);
+
+  assert.equal(byId('logs-back').localName, 'button');
+  assert.equal(byId('logs-back').getAttribute('type'), 'button');
+  assert.equal(byId('logs-back').textContent.replace('←', '').trim(), 'Details');
+  assert.equal(byId('logs-back').querySelector('[aria-hidden="true"]').textContent, '←', 'the arrow is not read aloud');
+
+  assert.equal(byId('logs-restart').localName, 'button');
+  assert.equal(byId('logs-restart').getAttribute('type'), 'button');
+  assert.equal(byId('logs-restart').textContent, 'View Live Logs');
+  assert.equal(byId('logs-restart').hidden, true, 'only offered once a stream ended');
+
+  assert.equal(byId('logs-status').getAttribute('role'), 'status');
+  assert.equal(byId('logs-pods').hidden, true);
+  assert.equal(byId('logs-dropped').hidden, true);
+  assert.equal(byId('logs-dropped').textContent, 'Older lines were dropped.');
+  assert.equal(byId('logs-empty').hidden, false);
+  assert.equal(byId('logs-empty').textContent, 'No log lines yet.');
+
+  const lines = byId('logs-lines');
+  assert.equal(lines.getAttribute('role'), 'log');
+  assert.ok(lines.getAttribute('aria-label'));
+  assert.equal(lines.getAttribute('tabindex'), '0', 'a scrolling area must be reachable without a mouse');
+  assert.equal(lines.children.length, 0);
+  assert.ok(byId('logs-dropped').compareDocumentPosition(lines) & 4, 'what was dropped is stated above the lines');
+});
+
+test('the live logs view has a filter field between its controls and the log', () => {
+  const doc = shell();
+  const field = doc.getElementById('logs-filter');
+
+  assert.ok(field, '#logs-filter is missing');
+  assert.ok(doc.getElementById('logs').contains(field));
+  assert.equal(field.localName, 'input');
+  assert.equal(field.getAttribute('type'), 'search');
+  assert.equal(field.getAttribute('aria-label'), 'Filter log lines', 'a field without a visible label needs a name');
+  assert.equal(field.getAttribute('placeholder'), 'Filter: keyword or /regex/');
+  // What was typed into one look at the logs must not come back in the next.
+  assert.equal(field.getAttribute('autocomplete'), 'off');
+  assert.equal(field.getAttribute('spellcheck'), 'false', 'patterns are not prose');
+  assert.equal(field.value, '', 'logs start unfiltered');
+  assert.equal(field.hasAttribute('aria-invalid'), false);
+  assert.equal(field.closest('form'), null, 'typing Enter must not submit anything');
+  assert.equal(field.hidden, false, 'shown whenever the logs view is');
+  assert.ok(doc.getElementById('logs-back').compareDocumentPosition(field) & 4, 'after the controls');
+  assert.ok(field.compareDocumentPosition(doc.getElementById('logs-lines')) & 4, 'before the log');
+
+  const status = doc.getElementById('logs-filter-status');
+  assert.ok(status, '#logs-filter-status is missing');
+  assert.ok(doc.getElementById('logs').contains(status));
+  assert.equal(status.getAttribute('role'), 'status');
+  assert.equal(status.textContent, '');
+  assert.ok(field.compareDocumentPosition(status) & 4, 'what the filter did is stated after the field');
+  assert.ok(status.compareDocumentPosition(doc.getElementById('logs-lines')) & 4);
+});
+
+test('the stylesheet lets the filter field span the logs view', () => {
+  const css = read('css/app.css');
+  const rule = (selector) => new RegExp(`(?:^|\\n)${selector}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+
+  assert.match(rule('\\.logs-filter'), /width:\s*100%/);
+});
+
+test('the stylesheet shows log lines in the monospace font with their spaces, wrapped, in an area that scrolls', () => {
+  const css = read('css/app.css');
+  const rule = (selector) => new RegExp(`(?:^|\\n)${selector}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+
+  assert.match(rule('\\.logs-lines'), /overflow:\s*auto/, 'the lines scroll by themselves');
+  assert.match(rule('\\.logs-lines'), /font:[^;]*var\(--mono\)/);
+  // The code keeps the reading position itself when old lines are dropped;
+  // a browser that also did would move it twice.
+  assert.match(rule('\\.logs-lines'), /overflow-anchor:\s*none/);
+  assert.match(rule('\\.log-text'), /white-space:\s*pre-wrap/, 'spaces and indentation are kept');
+  assert.match(rule('\\.log-text'), /overflow-wrap:\s*anywhere/, 'a long line wraps instead of widening the panel');
+  assert.match(rule('\\.log-notice'), /font-style:\s*italic/, 'a notice does not look like a log line');
+  assert.match(rule('\\.log-notice'), /color:\s*var\(--muted\)/);
+});
+
+test('while logs are shown the details panel gives them the height that is left', () => {
+  const css = read('css/app.css');
+  const rule = (selector) => new RegExp(`(?:^|\\n)${selector}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+
+  assert.match(rule('\\.drawer\\.showing-logs'), /display:\s*flex/);
+  assert.match(rule('\\.drawer\\.showing-logs'), /flex-direction:\s*column/);
+  assert.match(rule('\\.logs'), /flex:\s*1\b/);
+  assert.match(rule('\\.logs'), /min-height:\s*\d+px/, 'the log keeps a usable height under a tall header');
+  assert.match(rule('\\.logs-lines'), /flex:\s*1\b/);
+});
+
 test('the stylesheet indents the resource types of an API group slightly past the checkbox of their group', () => {
   const css = read('css/app.css');
   const rule = (selector) => new RegExp(`(?:^|\\n)${selector}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
@@ -206,6 +314,11 @@ test('the sidebar has the three health checkboxes', () => {
   const healths = [...doc.querySelectorAll('#health-filter input[type="checkbox"]')].map((i) => i.dataset.health);
 
   assert.deepEqual(healths, ['green', 'yellow', 'red']);
+  // The colors are how health is drawn; what the page calls it is a name.
+  const names = [...doc.querySelectorAll('#health-filter label')]
+      .map((label) => label.textContent.replace(/[●▲■]/g, '').trim());
+  assert.deepEqual(names, ['Healthy', 'In-Progress', 'Failed']);
+  assert.doesNotMatch(doc.body.textContent, /\b(green|yellow|red)\b/i, 'no color name is left in the page');
   for (const input of doc.querySelectorAll('#sidebar input')) {
     const labelled = input.closest('label') !== null || input.getAttribute('aria-label');
     assert.ok(labelled, `input ${input.id || input.value || input.dataset.health} needs a label`);
@@ -223,9 +336,9 @@ test('only the documented files are shipped', () => {
   walk('');
 
   assert.deepEqual(files.sort(), [
-    'css/app.css', 'fonts/Inter-LICENSE.txt', 'fonts/InterVariable.woff2', 'index.html',
-    'js/api.js', 'js/filters.js', 'js/layout.js', 'js/main.js', 'js/theme-boot.js', 'js/tree.js', 'js/view.js',
-    'js/yaml.js',
+    'css/app.css', 'fonts/Inter-LICENSE.txt', 'fonts/InterVariable.woff2', 'img/logo.svg', 'index.html',
+    'js/api.js', 'js/filters.js', 'js/layout.js', 'js/logfilter.js', 'js/main.js', 'js/theme-boot.js', 'js/tree.js',
+    'js/view.js', 'js/yaml.js',
   ]);
 });
 
@@ -272,11 +385,13 @@ test('the stylesheet fetches nothing from outside the app and keeps hidden eleme
   const css = read('css/app.css');
 
   assert.doesNotMatch(css, /@import/i, 'no imports');
-  // The only files a stylesheet may load are the fonts shipped next to it:
-  // under the CSP default-src 'self' anything else would be refused anyway.
+  // The only files a stylesheet may load are the fonts and the logo shipped
+  // next to it: under the CSP default-src 'self' anything else would be
+  // refused anyway.
   const urls = [...css.matchAll(/url\(\s*["']?([^"')]*)["']?\s*\)/gi)].map((match) => match[1]);
   for (const url of urls) {
-    assert.match(url, /^\.\.\/fonts\/[A-Za-z0-9._-]+\.woff2$/, `url(${url}) must be a font shipped with the app`);
+    assert.match(url, /^\.\.\/(fonts\/[A-Za-z0-9._-]+\.woff2|img\/logo\.svg)$/,
+        `url(${url}) must be a font or the logo shipped with the app`);
     assert.ok(existsSync(STATIC + 'css/' + url), `url(${url}) points to a file that is not shipped`);
   }
   assert.match(css, /\[hidden\]\s*\{\s*display:\s*none\s*!important;?\s*\}/);
@@ -390,6 +505,182 @@ for (const [theme, selector] of [['night', NIGHT], ['day', DAY]]) {
   });
 }
 
+// --- Logo ----------------------------------------------------------------------
+
+const LOGO = 'img/logo.svg';
+
+/** The logo as a document, and every color it is drawn in. */
+function logo() {
+  const svg = new JSDOM(read(LOGO), {contentType: 'image/svg+xml'}).window.document.documentElement;
+  const elements = [svg, ...svg.querySelectorAll('*')];
+  const colors = new Set();
+  for (const el of elements) {
+    for (const name of ['fill', 'stroke']) {
+      const value = el.getAttribute(name);
+      if (value && value !== 'none') colors.add(value);
+    }
+  }
+  return {svg, elements, colors: [...colors]};
+}
+
+/** The hue of a #rrggbb color in degrees, or null when it is (nearly) a gray. */
+function hue(hex) {
+  const [r, g, b] = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
+  const max = Math.max(r, g, b);
+  const spread = max - Math.min(r, g, b);
+  if (spread < 48) return null;
+  const sixth = max === r ? ((g - b) / spread) % 6 : max === g ? (b - r) / spread + 2 : (r - g) / spread + 4;
+  return (sixth * 60 + 360) % 360;
+}
+
+test('the header shows the logo next to the name of the app', () => {
+  const doc = shell();
+  const rule = /(?:^|\n)\.logo\s*\{([^}]*)\}/.exec(read('css/app.css'))?.[1] ?? '';
+
+  const name = doc.querySelector('header.header .app-name');
+  const mark = name.firstElementChild;
+  assert.ok(mark, 'the name of the app has no logo next to it');
+  assert.equal(mark.className, 'logo', 'the logo comes first, the name after it');
+  assert.equal(name.textContent.trim(), 'kvleva');
+  // The stylesheet draws the picture into that element. The page keeps no
+  // <img> of its own, so that an <img> found anywhere in it can only have
+  // come from hostile text (see security.test.js).
+  assert.equal(doc.querySelectorAll('img').length, 0);
+  assert.match(rule, /background:[^;]*url\(\s*["']?\.\.\/img\/logo\.svg["']?\s*\)/, 'the stylesheet must draw the logo');
+  const [width, height] = ['width', 'height'].map((side) => Number(new RegExp(`(?:^|[\\s;])${side}:\\s*(\\d+)px`).exec(rule)?.[1]));
+  assert.ok(width >= 20 && width === height, `the logo is ${width}px by ${height}px: it must be square and easy to see`);
+  // The name is written out right next to it: read aloud, the picture would
+  // only repeat it.
+  assert.equal(mark.getAttribute('aria-hidden'), 'true');
+});
+
+test('the name of the app is the largest text of the page, and the logo is at least as tall', () => {
+  const css = read('css/app.css');
+  const block = (selector) => new RegExp(`(?:^|\\n)${selector}\\s*\\{[^}]*\\}`).exec(css)?.[0] ?? '';
+  const sizes = (text) => [...text.matchAll(/font-size:\s*(\d+)px/g)].map((match) => Number(match[1]));
+
+  const [name] = sizes(block('\\.app-name'));
+  const largestOther = Math.max(...sizes(css.replace(block('\\.app-name'), '')));
+  const logoHeight = Number(/(?:^|[\s;])height:\s*(\d+)px/.exec(block('\\.logo'))?.[1]);
+
+  assert.ok(name >= 20, `the name of the app is ${name}px: it must stand out`);
+  assert.ok(name > largestOther, `the name of the app is ${name}px, other text is up to ${largestOther}px`);
+  assert.ok(logoHeight >= name, `the logo is ${logoHeight}px high next to a name of ${name}px`);
+});
+
+test('the browser tab shows the same logo', () => {
+  const doc = shell();
+
+  const icons = [...doc.querySelectorAll('link[rel="icon"]')].map((l) => [l.getAttribute('href'), l.getAttribute('type')]);
+
+  assert.deepEqual(icons, [[LOGO, 'image/svg+xml']]);
+});
+
+test('the logo is a picture that ships with the app and fetches nothing', () => {
+  const {svg, elements} = logo();
+
+  assert.equal(svg.localName, 'svg');
+  assert.equal(svg.namespaceURI, 'http://www.w3.org/2000/svg');
+  const [, , width, height] = (svg.getAttribute('viewBox') ?? '').split(/\s+/).map(Number);
+  assert.ok(width > 0 && width === height, `viewBox ${svg.getAttribute('viewBox')} must be square to fit a browser tab`);
+  assert.equal(svg.querySelector('title')?.textContent, 'kvleva');
+  for (const el of elements) {
+    assert.ok(!['script', 'style', 'image', 'use', 'a', 'foreignObject'].includes(el.localName),
+        `<${el.localName}> could run code or load something`);
+    for (const attr of el.attributes) {
+      assert.doesNotMatch(attr.name, /^(on|style$)|href$|^src$/, `${attr.name} on <${el.localName}>`);
+      assert.doesNotMatch(attr.value, /url\(/, `${attr.name} on <${el.localName}> refers to something else`);
+    }
+  }
+});
+
+test('the logo is a K with a magnifying glass where its arms meet, and the lower arm is the handle', () => {
+  const {svg} = logo();
+  const number = (el, name) => Number(el.getAttribute(name));
+  const corners = (polygon) => polygon.getAttribute('points').trim().split(/\s+/).map((pair) => pair.split(',').map(Number));
+  const parts = {};
+  for (const [name, selector] of Object.entries({
+    stem: 'rect.stem', arm: 'polygon.arm', handle: '.handle', rim: 'circle.rim', lens: 'circle.lens', glint: '.glint',
+  })) {
+    parts[name] = svg.querySelector(selector);
+    assert.ok(parts[name], `the logo has no ${name}`);
+  }
+  const {stem, arm, handle, rim, lens, glint} = parts;
+  const [cx, cy] = [number(rim, 'cx'), number(rim, 'cy')];
+  const fromMiddle = (x, y) => Math.hypot(x - cx, y - cy);
+
+  assert.equal(svg.querySelector('#kubernetes'), null, 'the glass is empty: no Kubernetes logo in it');
+
+  // The glass: a lens inside its rim, and on the lens the light it catches.
+  assert.deepEqual([number(lens, 'cx'), number(lens, 'cy')], [cx, cy]);
+  assert.ok(number(lens, 'r') < number(rim, 'r'), 'the rim goes around the lens');
+  const lights = [...glint.querySelectorAll('circle')];
+  assert.ok(lights.length > 0, 'the lens catches no light');
+  for (const light of lights) {
+    assert.ok(fromMiddle(number(light, 'cx'), number(light, 'cy')) + number(light, 'r') < number(lens, 'r'),
+        'the light is on the lens, not on the rim');
+  }
+
+  // The K: its stem to the left of the glass, its upper arm from the rim to
+  // the upper right.
+  assert.ok(number(stem, 'x') + number(stem, 'width') <= cx, 'the stem is to the left of the glass');
+  assert.ok(number(stem, 'y') < cy - number(rim, 'r') && number(stem, 'y') + number(stem, 'height') > cy + number(rim, 'r'),
+      'the stem is taller than the glass');
+  const armEnd = corners(arm).filter(([x, y]) => fromMiddle(x, y) > number(rim, 'r'));
+  assert.ok(armEnd.length >= 2 && armEnd.every(([x, y]) => x > cx && y < cy), 'the upper arm ends up and to the right');
+  assert.ok(corners(arm).some(([x, y]) => fromMiddle(x, y) < number(rim, 'r')), 'the upper arm starts at the rim');
+
+  // The lower arm is the handle: it starts under the rim, runs down and to
+  // the right at the slope the upper arm runs up, and ends in a round grip
+  // about level with the foot of the stem.
+  const shaft = corners(handle.querySelector('polygon'));
+  const grip = handle.querySelector('circle');
+  assert.ok(grip, 'the handle has no round end');
+  const [gx, gy, gr] = ['cx', 'cy', 'r'].map((name) => number(grip, name));
+  assert.ok(shaft.some(([x, y]) => fromMiddle(x, y) < number(rim, 'r')), 'the handle starts at the rim');
+  assert.ok(handle.compareDocumentPosition(rim) & 4, 'the rim is drawn over the start of the handle');
+  assert.ok(gx > cx && gy > cy && fromMiddle(gx, gy) > number(rim, 'r') + gr, 'the grip is beyond the rim, down and to the right');
+  assert.ok(Math.abs((gx - cx) - (gy - cy)) < 0.1, 'the handle runs at 45 degrees, like the upper arm');
+  const foot = number(stem, 'y') + number(stem, 'height');
+  assert.ok(Math.abs(gy + gr - foot) <= 3, `the handle ends at ${gy + gr}, the stem at ${foot}`);
+});
+
+for (const [theme, selector] of [['night', NIGHT], ['day', DAY]]) {
+  test(`in the ${theme} theme whatever is highlighted is drawn in a blue of the logo`, () => {
+    const {colors} = themeColors(read('css/app.css'), selector);
+
+    const accent = hue(colors.accent);
+
+    assert.ok(logo().colors.includes(colors.accent),
+        `--accent ${colors.accent} is not a color of the logo (${logo().colors.join(', ')})`);
+    assert.ok(accent >= 180 && accent <= 260, `--accent ${colors.accent} has hue ${accent}, which is not a blue`);
+  });
+}
+
+test('every color of the logo is a color of the interface', () => {
+  const css = read('css/app.css');
+  const page = new Set([NIGHT, DAY].flatMap((selector) => Object.values(themeColors(css, selector).colors)));
+
+  const {colors} = logo();
+
+  assert.ok(colors.length >= 2, 'the logo is drawn in more than one color');
+  for (const color of colors) {
+    assert.match(color, /^#[0-9a-f]{6}$/, `the logo must write ${color} the way the stylesheet does`);
+    assert.ok(page.has(color), `${color} of the logo is used nowhere in the interface`);
+  }
+});
+
+test('no color of the logo can be mistaken for a health', () => {
+  const hues = logo().colors.map(hue).filter((h) => h !== null);
+
+  // Grays, and the dark and the light of the logo, say nothing about health;
+  // whatever has a hue must stay far from the green, yellow and red of health.
+  assert.ok(hues.length > 0, 'the logo has a color of its own');
+  for (const h of hues) {
+    assert.ok(h >= 180 && h <= 260, `hue ${h.toFixed(0)} is not a blue`);
+  }
+});
+
 test('no script builds markup from strings or evaluates code', () => {
   const forbidden = /innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\s*\(|new Function|setAttribute\(\s*['"]on|srcdoc|createContextualFragment|DOMParser/;
   for (const bad of ['el.innerHTML = name', 'el.insertAdjacentHTML("beforeend", x)', 'document.write(x)',
@@ -407,7 +698,7 @@ test('no script builds markup from strings or evaluates code', () => {
 
 test('DOM-free modules do not reach for browser globals', () => {
   const isComment = (l) => /^\s*(\/\/|\/\*|\*)/.test(l);
-  for (const name of ['api.js', 'filters.js', 'layout.js', 'tree.js', 'yaml.js']) {
+  for (const name of ['api.js', 'filters.js', 'layout.js', 'logfilter.js', 'tree.js', 'yaml.js']) {
     const code = read('js/' + name).split('\n').filter((l) => !isComment(l)).join('\n');
     assert.doesNotMatch(code, /\b(document|window|localStorage|navigator|globalThis)\b/, `js/${name}`);
     assert.doesNotMatch(code, /^import /m, `js/${name} must stay dependency-free`);

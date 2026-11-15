@@ -3,8 +3,11 @@
 
 BINARY := bin/kvleva
 CONFIG ?= kvleva.example.yaml
+# The logo the app shows, and the sizes in which assets/logo offers it.
+LOGO := web/static/img/logo.svg
+LOGO_SIZES := 16 32 48 64 128 256 512
 
-.PHONY: build run test test-go test-web fmt vet clean
+.PHONY: build run test test-go test-web fmt vet clean logo
 
 build:
 	go build -o $(BINARY) ./cmd/kvleva
@@ -30,3 +33,13 @@ vet:
 
 clean:
 	rm -rf bin
+
+# Copy the logo of the app into assets/logo: once as it is (it scales to any
+# size) and once for every size in $(LOGO_SIZES). Run this after the logo
+# changed; the frontend tests fail while the copies differ from it.
+logo:
+	mkdir -p assets/logo
+	cp $(LOGO) assets/logo/kvleva.svg
+	for size in $(LOGO_SIZES); do \
+		sed "s/viewBox=\"0 0 64 64\"/& width=\"$$size\" height=\"$$size\"/" $(LOGO) > assets/logo/kvleva-$$size.svg; \
+	done

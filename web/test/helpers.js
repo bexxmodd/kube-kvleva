@@ -161,6 +161,11 @@ export class FakeEventSource {
   change(payload) {
     this.emit('change', {data: JSON.stringify(payload)});
   }
+
+  /** Emits a `logs` event carrying the given payload. */
+  logs(payload) {
+    this.emit('logs', {data: JSON.stringify(payload)});
+  }
 }
 
 /**

@@ -173,8 +173,10 @@ test('a widget shows the kind, the name and the reason of its resource', () => {
   assert.equal(widget.getAttribute('title'), 'Progressing', 'the reason is the tooltip');
 });
 
-for (const [health, glyph] of [['green', '●'], ['yellow', '▲'], ['red', '■']]) {
-  test(`a ${health} resource is outlined in ${health} and marked with a matching dot`, () => {
+for (const [health, glyph, name] of [
+  ['green', '●', 'Healthy'], ['yellow', '▲', 'In-Progress'], ['red', '■', 'Failed'],
+]) {
+  test(`a resource that is ${name} is outlined in ${health} and marked with a matching dot`, () => {
     const {view, byDataId} = mount();
     const t = tree.createTree();
     load(t, NS, [fx.summary({uid: 'r1', health, reason: 'Because'})]);
@@ -184,9 +186,40 @@ for (const [health, glyph] of [['green', '●'], ['yellow', '▲'], ['red', '■
     const widget = byDataId('r1');
     assert.deepEqual([...widget.classList].filter((c) => c.startsWith('health-')), [`health-${health}`]);
     assert.equal(widget.querySelector('.widget-head .dot').textContent, glyph);
-    assert.match(widget.getAttribute('aria-label'), new RegExp(health), 'the health is also available as text');
+    assert.match(widget.getAttribute('aria-label'), new RegExp(`, ${name}: Because$`),
+        'the health is also available as text, by its name');
+    assert.doesNotMatch(widget.getAttribute('aria-label'), new RegExp(health));
   });
 }
+
+test('the counts of a closed box are named Healthy, In-Progress and Failed for assistive technology', () => {
+  const {view, byDataId} = mount();
+
+  view.renderCanvas(canvas(tree.createTree()));
+
+  assert.equal(byDataId('ns:default').querySelector('.rollup').getAttribute('aria-label'),
+      '40 Healthy, 2 In-Progress, 0 Failed');
+});
+
+test('the header of a namespace box names the health of the namespace in words', () => {
+  const {view, byDataId} = mount();
+
+  view.renderCanvas(canvas(tree.createTree()));
+
+  const title = (id) => byDataId(id).querySelector('.area-title').getAttribute('aria-label');
+  assert.equal(title('ns:default'), 'Namespace default, Healthy: Active');
+  assert.equal(title('ns:shop'), 'Namespace shop, In-Progress: Terminating');
+});
+
+test('a resource whose health is not known is called Unknown', () => {
+  const {view, byDataId} = mount();
+  const t = tree.createTree();
+  load(t, NS, [fx.summary({uid: 'r1', kind: 'ConfigMap', name: 'odd', health: 'purple', reason: ''})]);
+
+  view.renderCanvas(canvas(t));
+
+  assert.match(byDataId('r1').getAttribute('aria-label'), /, Unknown$/);
+});
 
 test('an unknown health value never becomes a class name', () => {
   const {view, byDataId} = mount();
@@ -731,8 +764,8 @@ test('widgets are labelled groups for assistive technology', () => {
   view.renderCanvas(canvas(rolloutTree()));
 
   assert.equal(byDataId('dep-1').getAttribute('role'), 'group');
-  assert.equal(byDataId('dep-1').getAttribute('aria-label'), 'Deployment web, yellow: Progressing');
+  assert.equal(byDataId('dep-1').getAttribute('aria-label'), 'Deployment web, In-Progress: Progressing');
   assert.equal(byDataId('pod-1').querySelector('.container').getAttribute('role'), 'button');
   assert.equal(byDataId('pod-1').querySelector('.container').getAttribute('aria-label'),
-      'Init container migrate, green: Completed');
+      'Init container migrate, Healthy: Completed');
 });

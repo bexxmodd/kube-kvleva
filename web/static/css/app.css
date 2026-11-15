@@ -1,6 +1,7 @@
-/* kvleva: calm, information-dense, in a night and a day theme. No imports or
-   images, and no font but the one shipped next to this file: the page is
-   served under the CSP default-src 'self' and must fetch nothing else. */
+/* kvleva: calm, information-dense, in a night and a day theme. No imports, and
+   no font or image but the ones shipped next to this file (Inter and the
+   logo): the page is served under the CSP default-src 'self' and must fetch
+   nothing else. */
 
 /* Inter (SIL Open Font License, see fonts/Inter-LICENSE.txt). One variable
    file holds every weight. Shipping it makes text look the same on every
@@ -15,7 +16,12 @@
 
 /* The night theme, which is the default. Every color of the app is defined
    here and again in the day theme below; nothing else names a color, so
-   switching the theme recolors everything. */
+   switching the theme recolors everything.
+
+   The themes take their colors from the logo (img/logo.svg): the night theme
+   is laid on its dark background, writes in its light, and highlights in its
+   bright blue; the day theme highlights in its deep blue. The surfaces and
+   lines of both themes are tinted toward the same blue. */
 :root {
   color-scheme: dark;
 
@@ -24,15 +30,15 @@
   --yellow: #d29922;
   --red: #f85149;
 
-  --bg: #0d1117;
-  --panel: #161b22;
-  --panel-raised: #1c2128;
-  --line: #30363d;
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --accent: #58a6ff;
+  --bg: #0b111b;
+  --panel: #121a27;
+  --panel-raised: #1a2535;
+  --line: #2c394b;
+  --text: #e6edf5;
+  --muted: #8d9bae;
+  --accent: #56c2f0;
   /* What is drawn on top of the accent color, such as the knob of a switch. */
-  --on-accent: #0d1117;
+  --on-accent: #0b111b;
 
   /* YAML in the details panel. */
   --tok-key: #79c0ff;
@@ -56,13 +62,13 @@
   --yellow: #855800;
   --red: #c5202b;
 
-  --bg: #f6f8fa;
+  --bg: #f3f7fb;
   --panel: #ffffff;
-  --panel-raised: #eef1f4;
-  --line: #d0d7de;
-  --text: #1f2328;
-  --muted: #59636e;
-  --accent: #0860ca;
+  --panel-raised: #e8eff6;
+  --line: #cad5e2;
+  --text: #142033;
+  --muted: #53627a;
+  --accent: #0b6aa8;
   --on-accent: #ffffff;
 
   --tok-key: #0550ae;
@@ -235,10 +241,26 @@ input[type="search"] {
   color: var(--accent);
 }
 
+/* The name of the app, with its logo: the largest text of the page. */
 .app-name {
-  font-size: 17px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 20px;
   font-weight: 700;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
+  line-height: 1;
+}
+
+/* The logo, in front of the name. The picture brings its own dark tile, so it
+   looks the same in both themes. It is drawn here rather than by an <img> in
+   the page: the page has no <img> at all, so one that turns up can only have
+   come from hostile cluster data. */
+.logo {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  background: url("../img/logo.svg") center / contain no-repeat;
 }
 
 .cluster-name {
@@ -955,4 +977,98 @@ input[type="search"] {
 .missing .missing-name {
   font-weight: 600;
   overflow-wrap: anywhere;
+}
+
+/* --- Live logs ------------------------------------------------------------
+   The logs view takes the place of the detail sections. While it is shown
+   the panel is a column: the header keeps its height and the log gets what is
+   left and scrolls by itself, so following new lines never moves the header. */
+
+.drawer-actions {
+  margin-top: 8px;
+}
+
+.drawer.showing-logs {
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer.showing-logs .drawer-body {
+  flex: none;
+}
+
+.logs {
+  flex: 1;
+  /* Under a tall header the log keeps a usable height; the panel scrolls. */
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.logs-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.logs-status {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.logs-filter {
+  flex: none;
+  width: 100%;
+  margin-top: 8px;
+}
+
+.logs-filter[aria-invalid="true"] {
+  border-color: var(--red);
+}
+
+/* While the filter has nothing to say, its status takes no room. */
+.logs-filter-status:empty {
+  margin: 0;
+}
+
+.logs-lines {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  /* The reading position is kept by the code when old lines are dropped. */
+  overflow-anchor: none;
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: 13px/1.45 var(--mono);
+}
+
+.log-time,
+.log-source {
+  color: var(--muted);
+}
+
+.log-source {
+  font-weight: 600;
+}
+
+.log-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.log-notice {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.log-mark {
+  color: var(--yellow);
+  font-style: normal;
 }

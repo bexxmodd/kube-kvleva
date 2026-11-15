@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="128" height="128">
+  <title>kvleva</title>
+  <!-- The kvleva logo: a K with a magnifying glass where its arms meet. The
+       lower arm of the K is the handle of the glass. "Kvleva" (კვლევა) is
+       Georgian for examining, researching. Its colors are colors of the
+       interface (css/app.css): the night background and raised surface, the
+       accent of the night and of the day theme, and the night text color.
+       Only filled shapes, so that every renderer draws it alike. -->
+  <rect width="64" height="64" rx="14" fill="#0b111b"/>
+  <polygon class="arm" points="43.4,14 52.6,14 40.43,26.17 35.83,21.57" fill="#0b6aa8"/>
+  <rect class="stem" x="11" y="14" width="8" height="36" fill="#56c2f0"/>
+  <g class="handle">
+    <polygon points="40.61,37.66 49.3,46.35 44.35,51.3 35.66,42.61" fill="#56c2f0"/>
+    <circle cx="46.83" cy="48.83" r="3.5" fill="#56c2f0"/>
+  </g>
+  <circle class="rim" cx="30" cy="32" r="13.5" fill="#56c2f0"/>
+  <circle class="lens" cx="30" cy="32" r="9.5" fill="#1a2535"/>
+  <!-- The light the lens catches. -->
+  <g class="glint">
+    <path d="M23.94,29.79 A6.45,6.45 0 0 1 29.1,25.61 L29.31,27.1 A4.95,4.95 0 0 0 25.35,30.31 Z" fill="#e6edf5"/>
+    <circle cx="24.64" cy="30.05" r="0.75" fill="#e6edf5"/>
+    <circle cx="29.21" cy="26.36" r="0.75" fill="#e6edf5"/>
+  </g>
+</svg>

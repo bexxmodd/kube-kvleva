@@ -70,7 +70,10 @@ function boot({backend = fakeBackend(smallCluster()), storage = memoryStorage(),
     app, document, window, backend, clock, storage, frames, $, $$,
     byDataId: (id) => $$('[data-id]').find((e) => e.dataset.id === id),
     widgetIds: () => $$('.widget').map((w) => w.dataset.id),
-    stream: () => FakeEventSource.instances.at(-1),
+    /** The change stream. */
+    stream: () => FakeEventSource.instances.find((source) => source.url === '/api/stream'),
+    /** Every log stream opened so far, in order. */
+    logStreams: () => FakeEventSource.instances.filter((source) => source.url.endsWith('/logs')),
   };
 }
 
@@ -866,7 +869,7 @@ test('the drawer is refetched when its resource changed', async () => {
   await flush();
 
   assert.equal(backend.urls().filter((u) => u === '/api/resources/dep-1').length, 1);
-  assert.equal($('.drawer-head .badge').textContent, '● green');
+  assert.equal($('.drawer-head .badge').textContent, '● Healthy');
   assert.equal($('.drawer-head .drawer-reason').textContent, 'Available');
 });
 
@@ -900,7 +903,7 @@ test('a selected container is refetched when its pod changed', async () => {
   await flush();
 
   assert.equal(backend.urls().filter((u) => u === '/api/resources/pod-1/containers/app').length, 1);
-  assert.equal($('.drawer-head .badge').textContent, '● green');
+  assert.equal($('.drawer-head .badge').textContent, '● Healthy');
 });
 
 test('the drawer says so when its resource was deleted', async () => {
@@ -1043,6 +1046,462 @@ test('a failed refresh keeps what is shown and the next change tries again', asy
   await flush();
   assert.ok(byDataId('pod-1').classList.contains('health-green'));
   assert.equal($$('.list .note.error').length, 0);
+});
+
+// --- Live logs -----------------------------------------------------------------
+
+const selectDeployment = ({byDataId}) => byDataId('dep-1').querySelector('.widget-head .name').click();
+const selectPod = ({byDataId}) => byDataId('pod-1').click();
+const selectContainer = ({byDataId}) => byDataId('pod-1').querySelectorAll('.container')[1].click();
+
+/** Starts the app, selects something (the Deployment unless told otherwise) and switches to its live logs. */
+async function viewingLogs(select = selectDeployment, options = {}) {
+  const ctx = boot(options);
+  await flush();
+  select(ctx);
+  await flush();
+  ctx.backend.forget();
+  ctx.$('#drawer-body .view-logs').click();
+  return ctx;
+}
+
+const shown = (element) => element.closest('[hidden]') === null;
+const logTexts = ($$) => $$('#logs-lines .log-text').map((e) => e.textContent);
+const logSources = ($$) => $$('#logs-lines > *').map((e) => e.querySelector('.log-source')?.textContent ?? null);
+const openLogStreams = (logStreams) => logStreams().filter((source) => !source.closed);
+
+test('View Live Logs opens one log stream for the selected resource and fetches nothing', async () => {
+  const {backend, logStreams, $, $$} = await viewingLogs();
+  await flush();
+
+  assert.deepEqual(logStreams().map((source) => source.url), ['/api/resources/dep-1/logs']);
+  assert.equal(logStreams()[0].closed, false);
+  assert.equal(FakeEventSource.instances.length, 2, 'the change stream and the one log stream');
+  assert.deepEqual(backend.urls(), [], 'no list, no overview and no details are fetched for it');
+  assert.equal(shown($('#logs')), true);
+  assert.equal($('#logs-status').textContent, 'Connecting…');
+  assert.equal($('#logs-empty').textContent, 'No log lines yet.');
+  assert.equal(shown($('#logs-empty')), true);
+  assert.equal($('.drawer-name').textContent, 'default/web', 'the header stays');
+  assert.equal($$('#drawer-body .section').length, 0, 'the sections make room');
+});
+
+test('View Live Logs on a container opens the log stream of that container', async () => {
+  const {backend, logStreams, $} = await viewingLogs(selectContainer);
+
+  assert.deepEqual(logStreams().map((source) => source.url), ['/api/resources/pod-1/containers/app/logs']);
+  assert.deepEqual(backend.urls(), []);
+  assert.equal($('.drawer-kind').textContent, 'Container');
+  assert.equal(shown($('#logs')), true);
+});
+
+test('lines appear as the log stream delivers them, and the logs are live from the first event on', async () => {
+  const {backend, logStreams, $, $$} = await viewingLogs();
+  const [source] = logStreams();
+
+  source.logs(fx.logBatch([fx.logLine({text: 'one'})]));
+  assert.equal($('#logs-status').textContent, 'Live');
+  assert.deepEqual(logTexts($$), ['one']);
+  assert.equal(shown($('#logs-empty')), false);
+
+  source.logs(fx.logBatch(
+      [fx.logLine({pod: 'web-7d4b9c-fghij', container: 'sidecar', text: 'two'})],
+      [fx.logNotice({message: 'is waiting to start: ContainerCreating'})]));
+  assert.deepEqual(logTexts($$), ['one', 'two', 'is waiting to start: ContainerCreating']);
+  assert.deepEqual(logSources($$), ['web-7d4b9c-abcde/app', 'web-7d4b9c-fghij/sidecar', 'web-7d4b9c-abcde/sidecar'],
+      'the lines of a deployment say which pod and container wrote them');
+  assert.deepEqual(backend.urls(), [], 'lines arrive on the stream; nothing is fetched');
+  assert.equal(logStreams().length, 1);
+});
+
+test('the logs of a pod name the container of every line, the logs of a container name nothing', async () => {
+  const pod = await viewingLogs(selectPod);
+  assert.deepEqual(pod.logStreams().map((source) => source.url), ['/api/resources/pod-1/logs']);
+  pod.logStreams()[0].logs(fx.logBatch([fx.logLine({container: 'app'}), fx.logLine({container: 'migrate'})]));
+  assert.deepEqual(logSources(pod.$$), ['app', 'migrate']);
+
+  const container = await viewingLogs(selectContainer);
+  container.logStreams()[0].logs(fx.logBatch([fx.logLine({container: 'app'})]));
+  assert.deepEqual(logSources(container.$$), [null]);
+});
+
+test('a log stream that is open but has nothing to deliver yet is live, with no lines', async () => {
+  const {logStreams, $} = await viewingLogs();
+
+  logStreams()[0].emit('open');
+
+  assert.equal($('#logs-status').textContent, 'Live');
+  assert.equal(shown($('#logs-empty')), true);
+});
+
+test('a log event that is not the documented JSON is ignored and the logs go on', async () => {
+  const {logStreams, $, $$} = await viewingLogs();
+  const [source] = logStreams();
+
+  source.emit('logs', {data: '{not json'});
+  assert.equal($('#logs-status').textContent, 'Connecting…');
+  source.logs(fx.logBatch([fx.logLine({text: 'still here'})]));
+
+  assert.deepEqual(logTexts($$), ['still here']);
+  assert.equal(source.closed, false);
+});
+
+test('Details returns to the details and closes the log stream, without fetching anything', async () => {
+  const {backend, logStreams, $, $$} = await viewingLogs();
+  logStreams()[0].logs(fx.logBatch());
+
+  $('#logs-back').click();
+  await flush();
+
+  assert.equal(logStreams()[0].closed, true);
+  assert.equal(shown($('#logs')), false);
+  assert.deepEqual($$('#drawer-body .section-title').map((t) => t.textContent),
+      ['Configuration', 'Status', 'Events', 'Connections']);
+  assert.equal($('#drawer-body .view-logs').textContent, 'View Live Logs');
+  assert.deepEqual(backend.urls(), [], 'the details were still there');
+  assert.equal(logStreams().length, 1);
+});
+
+for (const [what, act] of [
+  ['selecting another resource', ({byDataId}) => byDataId('cm-1').click()],
+  ['selecting a container', selectContainer],
+  ['selecting the same resource again', selectDeployment],
+  ['following a connection', ({$$}) => $$('#drawer-body button.link')[0]?.click()],
+  ['the close button of the details panel', ({$}) => $('#drawer-close').click()],
+  ['Escape', ({document}) => fire(document.body, 'keydown', {key: 'Escape'})],
+  ['stopping the app', ({app}) => app.stop()],
+]) {
+  test(`${what} closes the log stream`, async () => {
+    // A container links back to its pod even while its logs are shown.
+    const ctx = await viewingLogs(what === 'following a connection' ? selectContainer : selectDeployment);
+    const [source] = ctx.logStreams();
+    assert.equal(source.closed, false);
+
+    act(ctx);
+    await flush();
+
+    assert.equal(source.closed, true, 'no more log lines are requested from the cluster');
+    assert.equal(ctx.logStreams().length, 1, 'and no other log stream is opened');
+    if (what !== 'stopping the app') assert.equal(shown(ctx.$('#logs')), false);
+  });
+}
+
+test('when the resource is deleted the log stream is closed and what was logged stays readable', async () => {
+  const {backend, clock, stream, logStreams, $, $$} = await viewingLogs();
+  logStreams()[0].logs(fx.logBatch([fx.logLine({text: 'last words'})]));
+  backend.lists['namespace=default'] = backend.lists['namespace=default'].filter((i) => i.uid !== 'dep-1');
+
+  stream().change(fx.change({deleted: ['dep-1']}));
+  clock.advance(500);
+  await flush();
+
+  assert.equal(logStreams()[0].closed, true);
+  assert.equal($('#drawer-body').textContent, 'This resource no longer exists.');
+  assert.equal(shown($('#logs')), true);
+  assert.deepEqual(logTexts($$), ['last words']);
+  assert.equal($('#logs-status').textContent, 'The log stream ended.');
+  assert.equal(shown($('#logs-restart')), false, 'there is nothing left to follow');
+  assert.equal(logStreams().length, 1);
+
+  $('#logs-back').click();
+  assert.equal(shown($('#logs')), false);
+  assert.equal($('#drawer-body').textContent, 'This resource no longer exists.');
+});
+
+test('when a refresh finds the resource gone the log stream is closed as well', async () => {
+  const {backend, clock, stream, logStreams, $} = await viewingLogs();
+  delete backend.details['dep-1'];
+
+  stream().change(fx.change({changed: ['dep-1']}));
+  clock.advance(500);
+  await flush();
+
+  assert.equal($('#drawer-body').textContent, 'This resource no longer exists.');
+  assert.equal(logStreams()[0].closed, true);
+  assert.equal($('#logs-status').textContent, 'The log stream ended.');
+  assert.equal(shown($('#logs-restart')), false);
+});
+
+test('a log stream that fails is closed and said to have ended; View Live Logs starts a new one', async () => {
+  const {backend, logStreams, $, $$} = await viewingLogs();
+  const [first] = logStreams();
+  first.logs(fx.logBatch([fx.logLine({text: 'before the break'})]));
+
+  first.emit('error');
+
+  assert.equal(first.closed, true, 'it must not reconnect by itself: that would repeat lines');
+  assert.equal($('#logs-status').textContent, 'The log stream ended.');
+  assert.equal(shown($('#logs-restart')), true);
+  assert.deepEqual(logTexts($$), ['before the break'], 'what was logged stays');
+  assert.equal(logStreams().length, 1);
+
+  $('#logs-restart').click();
+
+  assert.deepEqual(logStreams().map((source) => [source.url, source.closed]),
+      [['/api/resources/dep-1/logs', true], ['/api/resources/dep-1/logs', false]]);
+  assert.equal($('#logs-status').textContent, 'Connecting…');
+  assert.deepEqual(logTexts($$), [], 'the new stream sends the recent lines again');
+  assert.equal(shown($('#logs-restart')), false);
+
+  logStreams()[1].logs(fx.logBatch([fx.logLine({text: 'before the break'}), fx.logLine({text: 'after it'})]));
+  assert.deepEqual(logTexts($$), ['before the break', 'after it']);
+  assert.deepEqual(backend.urls(), []);
+});
+
+test('there is never more than one open log stream', async () => {
+  const ctx = await viewingLogs();
+  const {logStreams, $} = ctx;
+  assert.equal(openLogStreams(logStreams).length, 1);
+
+  selectPod(ctx);
+  await flush();
+  assert.equal(openLogStreams(logStreams).length, 0);
+  $('#drawer-body .view-logs').click();
+  assert.deepEqual(openLogStreams(logStreams).map((source) => source.url), ['/api/resources/pod-1/logs']);
+
+  selectContainer(ctx);
+  await flush();
+  $('#drawer-body .view-logs').click();
+  assert.deepEqual(openLogStreams(logStreams).map((source) => source.url),
+      ['/api/resources/pod-1/containers/app/logs']);
+  assert.equal(logStreams().length, 3);
+});
+
+test('starting the logs again while their stream is still open replaces that stream', async () => {
+  const {logStreams, $, $$} = await viewingLogs();
+  logStreams()[0].logs(fx.logBatch([fx.logLine({text: 'one'})]));
+
+  // The control is hidden while the logs are live; one stream at a time must
+  // hold even if it is activated all the same.
+  $('#logs-restart').click();
+
+  assert.deepEqual(logStreams().map((source) => source.closed), [true, false]);
+  assert.deepEqual(logTexts($$), []);
+  assert.equal($('#logs-status').textContent, 'Connecting…');
+});
+
+test('what a closed log stream still delivers is not shown in the next log', async () => {
+  const ctx = await viewingLogs();
+  const {logStreams, $, $$} = ctx;
+  const [old] = logStreams();
+  selectPod(ctx);
+  await flush();
+  $('#drawer-body .view-logs').click();
+
+  old.logs(fx.logBatch([fx.logLine({text: 'from the deployment'})]));
+  old.emit('error');
+
+  assert.deepEqual(logTexts($$), []);
+  assert.equal($('#logs-status').textContent, 'Connecting…');
+  assert.equal(logStreams()[1].closed, false);
+});
+
+test('a refresh of the details keeps the log lines, the logs view and the open log stream', async () => {
+  const {backend, clock, stream, logStreams, $, $$} = await viewingLogs();
+  logStreams()[0].logs(fx.logBatch([fx.logLine({text: 'one'}), fx.logLine({text: 'two'})], [fx.logNotice()]));
+  const before = $$('#logs-lines > *');
+  backend.details['dep-1'] = fx.detail({summary: {...fx.deployment(), health: 'green', reason: 'Available'}});
+
+  stream().change(fx.change({changed: ['dep-1']}));
+  clock.advance(500);
+  await flush();
+
+  assert.equal(backend.urls().filter((u) => u === '/api/resources/dep-1').length, 1, 'the details were refetched');
+  assert.equal($('.drawer-head .badge').textContent, '● Healthy', 'and the header shows the new health');
+  assert.equal($('.drawer-head .drawer-reason').textContent, 'Available');
+  assert.equal(shown($('#logs')), true, 'the logs stay open');
+  assert.equal($$('#drawer-body .section').length, 0);
+  assert.deepEqual($$('#logs-lines > *'), before, 'the very same lines are still shown');
+  assert.equal($('#logs-status').textContent, 'Live');
+  assert.equal(logStreams().length, 1, 'the stream was not started again');
+  assert.equal(logStreams()[0].closed, false);
+
+  logStreams()[0].logs(fx.logBatch([fx.logLine({text: 'three'})]));
+  assert.deepEqual(logTexts($$).slice(-2), [fx.logNotice().message, 'three'], 'and the stream keeps adding to them');
+});
+
+test('when a refresh says logs are no longer available, the log stays and the server ends its stream', async () => {
+  const {backend, clock, stream, logStreams, $, $$} = await viewingLogs();
+  logStreams()[0].logs(fx.logBatch([fx.logLine({text: 'one'})]));
+  backend.details['dep-1'] = fx.detail({logs: fx.logs(0)});
+
+  stream().change(fx.change({changed: ['dep-1']}));
+  clock.advance(500);
+  await flush();
+
+  assert.equal(shown($('#logs')), true);
+  assert.deepEqual(logTexts($$), ['one']);
+  assert.equal(logStreams()[0].closed, false, 'the server ends the stream when the resource is gone');
+  assert.equal(logStreams().length, 1);
+
+  logStreams()[0].emit('error');
+  assert.equal($('#logs-status').textContent, 'The log stream ended.');
+  assert.equal(shown($('#logs-restart')), false, 'logs that are not available cannot be started again');
+});
+
+test('a details refresh that fails leaves the logs and their stream alone', async () => {
+  const {backend, clock, stream, logStreams, $, $$} = await viewingLogs();
+  logStreams()[0].logs(fx.logBatch([fx.logLine({text: 'one'})]));
+  backend.failWith = 500;
+
+  stream().change(fx.change({changed: ['dep-1']}));
+  clock.advance(500);
+  await flush();
+
+  assert.match($('#drawer-body .note.error').textContent, /backend unavailable/);
+  assert.equal(shown($('#logs')), true);
+  assert.deepEqual(logTexts($$), ['one']);
+  assert.equal(logStreams()[0].closed, false);
+});
+
+test('a large workload says how many of its pods the logs follow', async () => {
+  const data = smallCluster();
+  data.details['dep-1'] = fx.detail({logs: fx.logs(10, 23)});
+  const {$} = await viewingLogs(selectDeployment, {backend: fakeBackend(data)});
+
+  assert.equal(shown($('#logs-pods')), true);
+  assert.equal($('#logs-pods').textContent, 'Logs of 10 of 23 pods');
+});
+
+test('a resource without logs offers no View Live Logs, and the logs view controls open nothing for it', async () => {
+  const {document, logStreams, $, $$, byDataId} = boot();
+  await flush();
+
+  // Nothing is selected yet: the controls exist in the page, hidden.
+  $('#logs-restart').click();
+  $('#logs-back').click();
+  byDataId('cm-1').click();
+  await flush();
+  assert.equal($$('#drawer .view-logs').filter(shown).length, 0, 'a ConfigMap has no logs');
+  $('#logs-restart').click();
+  $('#logs-back').click();
+  fire(document.body, 'keydown', {key: 'Escape'});
+
+  assert.equal(logStreams().length, 0);
+  assert.equal(FakeEventSource.instances.length, 1, 'only the change stream');
+  assert.equal(shown($('#logs')), false);
+});
+
+test('View Live Logs is offered again after the logs of a resource were closed with the panel', async () => {
+  const ctx = await viewingLogs();
+  const {logStreams, $, $$} = ctx;
+  logStreams()[0].logs(fx.logBatch([fx.logLine({text: 'one'})]));
+  $('#drawer-close').click();
+
+  selectDeployment(ctx);
+  await flush();
+
+  assert.equal(shown($('#logs')), false, 'the details come first again');
+  assert.deepEqual(logTexts($$), []);
+  assert.equal($('#drawer-body .view-logs').textContent, 'View Live Logs');
+  assert.equal(logStreams().length, 1);
+});
+
+// --- Live logs: the filter -----------------------------------------------------
+
+const WRITTEN = ['GET /healthz 200', 'ERROR disk full', 'error: retrying a.b', 'saved axb'];
+const shownLogLines = ($$) =>
+    $$('#logs-lines > .log-line').filter(shown).map((line) => line.querySelector('.log-text').textContent);
+
+/** The live logs of the pod, after it wrote the four lines of the feature file. */
+async function filteringLogs() {
+  const ctx = await viewingLogs(selectPod);
+  ctx.logStreams()[0].logs(fx.logBatch(WRITTEN.map((text) => fx.logLine({text}))));
+  ctx.backend.forget();
+  return ctx;
+}
+
+test('filtering the log asks the cluster for nothing, saves nothing and leaves the log stream as it is', async () => {
+  const {backend, clock, storage, logStreams, $, $$} = await filteringLogs();
+  const saved = new Map(storage.data);
+
+  type($('#logs-filter'), 'error');
+  type($('#logs-filter'), '/^ERROR|200$/');
+  type($('#logs-filter'), '/(/');
+  type($('#logs-filter'), 'error');
+  clock.advance(5000);
+  await flush();
+
+  assert.deepEqual(shownLogLines($$), ['ERROR disk full', 'error: retrying a.b']);
+  assert.equal($('#logs-filter-status').textContent, 'Showing 2 of 4 lines');
+  assert.deepEqual(backend.urls(), [], 'the filter narrows what the page already holds');
+  assert.deepEqual(FakeEventSource.instances.map((source) => source.url), ['/api/stream', '/api/resources/pod-1/logs']);
+  assert.equal(logStreams()[0].closed, false);
+  assert.equal($('#logs-status').textContent, 'Live');
+  assert.deepEqual(new Map(storage.data), saved, 'the filter is not remembered');
+});
+
+test('lines that the log stream delivers after a filter was entered are filtered too', async () => {
+  const {logStreams, $, $$} = await filteringLogs();
+  type($('#logs-filter'), 'error');
+
+  logStreams()[0].logs(fx.logBatch([fx.logLine({text: '200 OK'}), fx.logLine({text: 'fatal error'})],
+      [fx.logNotice({message: 'is waiting to start'})]));
+
+  assert.deepEqual(shownLogLines($$), ['ERROR disk full', 'error: retrying a.b', 'fatal error']);
+  assert.equal($('#logs-filter-status').textContent, 'Showing 3 of 6 lines');
+  assert.equal(shown($('#logs-lines > .log-notice')), true, 'what the app reports is never filtered away');
+});
+
+test('the filter belongs to one look at the logs: after Details the logs start unfiltered', async () => {
+  const {logStreams, $, $$} = await filteringLogs();
+  type($('#logs-filter'), 'error');
+
+  $('#logs-back').click();
+  $('#drawer-body .view-logs').click();
+
+  assert.equal($('#logs-filter').value, '');
+  logStreams()[1].logs(fx.logBatch(WRITTEN.map((text) => fx.logLine({text}))));
+  assert.deepEqual(shownLogLines($$), WRITTEN);
+  assert.equal($('#logs-filter-status').textContent, '');
+});
+
+test('the filter is gone when the logs of another resource are viewed', async () => {
+  const ctx = await filteringLogs();
+  const {$} = ctx;
+  type($('#logs-filter'), 'error');
+
+  selectDeployment(ctx);
+  await flush();
+  $('#drawer-body .view-logs').click();
+
+  assert.equal($('#logs-filter').value, '');
+  assert.equal($('#logs-filter-status').textContent, '');
+});
+
+test('the filter stays through a refresh of the details and through a restart of the stream', async () => {
+  const {clock, stream, logStreams, $, $$} = await filteringLogs();
+  type($('#logs-filter'), 'error');
+
+  stream().change(fx.change({changed: ['pod-1']}));
+  clock.advance(500);
+  await flush();
+  assert.equal($('#logs-filter').value, 'error');
+  assert.deepEqual(shownLogLines($$), ['ERROR disk full', 'error: retrying a.b']);
+
+  logStreams()[0].emit('error');
+  $('#logs-restart').click();
+  assert.equal($('#logs-filter').value, 'error');
+  logStreams()[1].logs(fx.logBatch(WRITTEN.map((text) => fx.logLine({text}))));
+  assert.deepEqual(shownLogLines($$), ['ERROR disk full', 'error: retrying a.b']);
+});
+
+test('Escape in the filter field clears the filter first; only then does it close the panel and the stream', async () => {
+  const {backend, logStreams, $, $$} = await filteringLogs();
+  type($('#logs-filter'), 'error');
+
+  fire($('#logs-filter'), 'keydown', {key: 'Escape'});
+
+  assert.equal($('#drawer').hidden, false);
+  assert.equal(logStreams()[0].closed, false, 'the log is still followed');
+  assert.equal($('#logs-filter').value, '');
+  assert.deepEqual(shownLogLines($$), WRITTEN);
+
+  fire($('#logs-filter'), 'keydown', {key: 'Escape'});
+
+  assert.equal($('#drawer').hidden, true);
+  assert.equal(logStreams()[0].closed, true);
+  assert.deepEqual(backend.urls(), []);
 });
 
 // --- System resources switch ---------------------------------------------------
@@ -1361,7 +1820,8 @@ test('references are not drawn on the canvas, whatever the user does', async () 
 // --- Read-only ---------------------------------------------------------------
 
 test('a whole session issues nothing but GET requests', async () => {
-  const {backend, clock, stream, window, $, $$, byDataId} = boot({clipboard: {writeText: async () => {}}});
+  const {backend, clock, stream, logStreams, window, $, $$, byDataId} =
+      boot({clipboard: {writeText: async () => {}}});
   recordScrolls(window);
   await flush();
 
@@ -1373,8 +1833,17 @@ test('a whole session issues nothing but GET requests', async () => {
   $('.configuration .copy').click();
   $$('.connections button.link')[0].click();
   await flush();
+  // Live logs: of a resource, ended and started again, then of a container.
+  byDataId('dep-1').querySelector('.widget-head .name').click();
+  await flush();
+  $('#drawer-body .view-logs').click();
+  logStreams()[0].logs(fx.logBatch());
+  logStreams()[0].emit('error');
+  $('#logs-restart').click();
+  $('#logs-back').click();
   byDataId('pod-1').querySelectorAll('.container')[1].click();
   await flush();
+  $('#drawer-body .view-logs').click();
   kindBox($$, 'core/Secret').click();
   $$('#pills .pill')[0].click();
   type($('#search'), 'web');
@@ -1395,7 +1864,14 @@ test('a whole session issues nothing but GET requests', async () => {
     assert.equal(request.body, undefined, request.url);
     assert.match(request.url, /^\/api\//, 'only same-origin API paths');
   }
-  assert.equal(FakeEventSource.instances.length, 1);
+  // An EventSource can only read: it always issues a GET and carries no body.
+  assert.deepEqual(FakeEventSource.instances.map((source) => source.url), [
+    '/api/stream',
+    '/api/resources/dep-1/logs',
+    '/api/resources/dep-1/logs',
+    '/api/resources/pod-1/containers/app/logs',
+  ]);
+  assert.deepEqual(backend.urls().filter((url) => url.includes('/logs')), [], 'logs are only ever streamed');
 });
 
 // --- Entry point -------------------------------------------------------------
