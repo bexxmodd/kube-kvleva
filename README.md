@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo/kvleva.svg" alt="kvleva logo" width="128" height="128">
+  <img src="assets/logo/kvleva-512.svg" alt="kvleva logo">
 </p>
 
 # kube-kvleva

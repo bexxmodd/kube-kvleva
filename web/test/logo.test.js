@@ -57,8 +57,10 @@ test('the README of the project starts with the logo', () => {
   assert.ok(image, 'the README shows no picture');
   assert.equal(readme.slice(0, image.index).replace(/<[^>]*>/g, '').trim(), '', 'nothing is written before the logo');
   // A path inside the project, so that the picture shows on the project page
-  // and in a local copy alike.
-  assert.equal(/\ssrc="([^"]*)"/.exec(image[0])?.[1], FOLDER + 'kvleva.svg');
+  // and in a local copy alike. It is the largest of the sized copies, shown
+  // at the size that file has.
+  assert.equal(/\ssrc="([^"]*)"/.exec(image[0])?.[1], `${FOLDER}kvleva-${Math.max(...SIZES)}.svg`);
+  assert.doesNotMatch(image[0], /\s(width|height)="/, 'the file brings its size; the README must not shrink it');
   assert.match(image[0], /\salt="[^"]*kvleva[^"]*"/i, 'the picture must say what it is to those who cannot see it');
   assert.ok(readme.indexOf('# kube-kvleva') > image.index, 'the title follows the logo');
 });
