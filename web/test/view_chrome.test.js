@@ -8,10 +8,18 @@ import {assertNoPageErrors, loadShell, recorder, type} from './helpers.js';
 
 afterEach(assertNoPageErrors);
 
-function mount() {
+/** The API groups of the fixture overview, in the order they are listed. */
+const GROUP_NAMES = ['core', 'apps', 'gateway.networking.k8s.io'];
+
+/**
+ * @param {{expandGroups?: boolean}=} options API groups start collapsed; tests
+ *     about the resource types listed under them expand all of them first.
+ */
+function mount({expandGroups = false} = {}) {
   const {document, window} = loadShell();
   const {handlers, calls} = recorder();
   const view = viewModule.createView(document, handlers);
+  if (expandGroups) view.setExpandedGroups(GROUP_NAMES);
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
   return {document, window, view, calls, $, $$};
@@ -22,7 +30,7 @@ const header = (overrides = {}) => ({
 });
 
 const sidebar = (overrides = {}) => ({
-  overview: fx.overview(), filters: filters.defaultFilters(), arrowsCapped: false, ...overrides,
+  overview: fx.overview(), filters: filters.defaultFilters(), ...overrides,
 });
 
 // --- Header ------------------------------------------------------------------
@@ -112,6 +120,42 @@ test('pills reflect the health filter and toggle it when clicked', () => {
   assert.deepEqual(calls, [['onHealthToggle', 'red']]);
 });
 
+test('the system resources switch is off by default and says how many are hidden', () => {
+  const {view, $} = mount();
+
+  view.renderHeader(header());
+
+  assert.equal($('#system-toggle').checked, false);
+  assert.equal($('#system-count').textContent, '287 hidden');
+});
+
+test('the system resources switch reflects the filter when on', () => {
+  const {view, $} = mount();
+
+  view.renderHeader(header({filters: filters.setSystem(filters.defaultFilters(), true)}));
+
+  assert.equal($('#system-toggle').checked, true);
+  assert.equal($('#system-count').textContent, '287 shown');
+});
+
+test('the system resources switch says nothing about a cluster without system resources', () => {
+  const {view, $} = mount();
+
+  view.renderHeader(header({overview: fx.overview({systemResources: 0})}));
+
+  assert.equal($('#system-count').textContent, '');
+});
+
+test('flipping the system resources switch reports the new state', () => {
+  const {view, $, calls} = mount();
+  view.renderHeader(header());
+
+  $('#system-toggle').click();
+  $('#system-toggle').click();
+
+  assert.deepEqual(calls, [['onSystemToggle', true], ['onSystemToggle', false]]);
+});
+
 test('typing in the search box reports the text', () => {
   const {view, $, calls} = mount();
   view.renderHeader(header());
@@ -156,54 +200,218 @@ test('the health checkboxes reflect the filter and toggle it', () => {
   assert.deepEqual(calls, [['onHealthToggle', 'yellow']]);
 });
 
-test('the connection mode reflects the filter and reports a change', () => {
+/** The resource type list as [group, total, [[kind, count], ...]] entries. */
+const kindGroups = ($$) => $$('#kind-list > .kind-group').map((group) => [
+  group.querySelector('.kind-group-name').textContent,
+  group.querySelector('.kind-group-head .count').textContent,
+  [...group.querySelectorAll('.kind-row')].map((row) => [
+    row.querySelector('.kind-name').textContent,
+    row.querySelector('.count').textContent,
+  ]),
+]);
+
+const groupBox = ($$, group) => $$('#kind-list input').find((i) => i.dataset.group === group);
+
+test('resource types are grouped by API group, core first, each with its count', () => {
+  const {view, $$} = mount({expandGroups: true});
+
+  view.renderSidebar(sidebar());
+
+  assert.deepEqual(kindGroups($$), [
+    ['core', '63', [['Service', '9'], ['Pod', '42'], ['Secret', '12']]],
+    ['apps', '26', [['Deployment', '12'], ['ReplicaSet', '14']]],
+    ['gateway.networking.k8s.io', '1', [['Gateway', '1']]],
+  ]);
+  assert.ok($$('#kind-list .kind-row').every((row) => row.querySelector('label input[type="checkbox"]')),
+      'every type has a labelled checkbox');
+  assert.ok($$('#kind-list .kind-group').every((g) => g.querySelector('label.kind-group-head input[type="checkbox"]')),
+      'and so has every group');
+  assert.equal($$('#kind-list .kind-row').some((row) => row.textContent.includes('apps')), false,
+      'the group is named once, in the heading, not on every type');
+});
+
+test('the checkbox of a group shows whether its types are all shown, all hidden, or mixed', () => {
+  const {view, $$} = mount();
+  let f = filters.setKindHidden(filters.defaultFilters(), 'core/Secret', true);
+  f = filters.setKindsHidden(f, ['apps/Deployment', 'apps/ReplicaSet'], true);
+
+  view.renderSidebar(sidebar({filters: f}));
+
+  const state = (group) => [groupBox($$, group).checked, groupBox($$, group).indeterminate];
+  assert.deepEqual(state('core'), [false, true], 'one of three hidden: mixed');
+  assert.deepEqual(state('apps'), [false, false], 'all hidden');
+  assert.deepEqual(state('gateway.networking.k8s.io'), [true, false], 'all shown');
+});
+
+test('the checkbox of a group hides or shows all of its types at once', () => {
   const {view, $$, calls} = mount();
+  view.renderSidebar(sidebar({filters: filters.setKindHidden(filters.defaultFilters(), 'core/Secret', true)}));
 
-  view.renderSidebar(sidebar({filters: filters.setConnections(filters.defaultFilters(), 'selected')}));
+  groupBox($$, 'apps').click();
+  groupBox($$, 'core').click();
 
-  const radios = $$('#connections-filter input');
-  assert.deepEqual(radios.map((r) => [r.value, r.checked]), [['all', false], ['selected', true], ['off', false]]);
-
-  radios[2].click();
-  assert.deepEqual(calls, [['onConnections', 'off']]);
+  assert.deepEqual(calls, [
+    ['onKindsHidden', ['apps/Deployment', 'apps/ReplicaSet'], true],
+    ['onKindsHidden', ['core/Service', 'core/Pod', 'core/Secret'], false],
+  ], 'a mixed group is shown completely');
 });
 
-test('a note next to the connection modes says when too many arrows forced selected-only', () => {
-  const {view, $} = mount();
+test('narrowing the list keeps only groups with matching types, and a group then acts on what it shows', () => {
+  const {view, $, $$, calls} = mount();
+  view.renderSidebar(sidebar());
 
-  view.renderSidebar(sidebar({arrowsCapped: true}));
-  assert.equal($('#connections-note').hidden, false);
-  assert.match($('#connections-note').textContent, /more than 300/i);
-  assert.match($('#connections-note').textContent, /selected/i);
+  type($('#kind-search'), 'se');
 
-  view.renderSidebar(sidebar({arrowsCapped: false}));
-  assert.equal($('#connections-note').hidden, true);
+  assert.deepEqual(kindGroups($$), [
+    ['core', '21', [['Service', '9'], ['Secret', '12']]],
+    ['apps', '14', [['ReplicaSet', '14']]],
+  ]);
+
+  groupBox($$, 'core').click();
+  assert.deepEqual(calls, [['onKindsHidden', ['core/Service', 'core/Secret'], true]]);
 });
 
-test('resource types are listed in overview order with kind, group and count', () => {
+test('a refresh keeps the focus on the group checkbox being used', () => {
+  const {view, document, $$} = mount();
+  view.renderSidebar(sidebar());
+  groupBox($$, 'apps').focus();
+
+  view.renderSidebar(sidebar({overview: fx.overview({revision: 2000})}));
+
+  assert.equal(document.activeElement.dataset.group, 'apps');
+  assert.ok(document.activeElement.isConnected);
+});
+
+/** The button that expands or collapses the types listed under a group. */
+const groupToggle = ($$, group) => $$('#kind-list button').find((b) => b.dataset.groupToggle === group);
+
+const ALL_GROUPS = [
+  ['core', '63', [['Service', '9'], ['Pod', '42'], ['Secret', '12']]],
+  ['apps', '26', [['Deployment', '12'], ['ReplicaSet', '14']]],
+  ['gateway.networking.k8s.io', '1', [['Gateway', '1']]],
+];
+
+/** ALL_GROUPS with only the types of the named groups listed. */
+const expandedOnly = (...expanded) =>
+    ALL_GROUPS.map(([group, count, kinds]) => [group, count, expanded.includes(group) ? kinds : []]);
+
+test('every API group starts collapsed, with a button to expand it next to its checkbox', () => {
   const {view, $$} = mount();
 
   view.renderSidebar(sidebar());
 
-  const rows = $$('#kind-list li').map((li) => [
-    li.querySelector('.kind-name').textContent,
-    li.querySelector('.kind-group').textContent,
-    li.querySelector('.count').textContent,
+  assert.deepEqual(kindGroups($$), expandedOnly(), 'only the headings, with name and count');
+  for (const group of GROUP_NAMES) {
+    const toggle = groupToggle($$, group);
+    assert.ok(toggle, `${group} has a button`);
+    assert.equal(toggle.getAttribute('type'), 'button');
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+    assert.equal(toggle.getAttribute('aria-label'), `Expand the resource types of ${group}`);
+    assert.equal(toggle.closest('label'), null, 'outside the label, so using it never ticks the checkbox');
+    assert.equal(toggle.closest('.kind-group').dataset.group, group);
+  }
+});
+
+test('expanding an API group lists the types under it', () => {
+  const {view, $$, calls} = mount();
+  view.renderSidebar(sidebar());
+
+  groupToggle($$, 'apps').click();
+
+  assert.deepEqual(kindGroups($$), expandedOnly('apps'), 'the other groups stay collapsed');
+  const toggle = groupToggle($$, 'apps');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  assert.equal(toggle.getAttribute('aria-label'), 'Collapse the resource types of apps');
+  assert.notEqual(toggle.textContent, groupToggle($$, 'core').textContent, 'the button shows which way it is');
+  assert.deepEqual(calls, [['onGroupsExpanded', ['apps']]], 'reported to be remembered; no filter is touched');
+});
+
+test('collapsing an expanded API group hides its types again', () => {
+  const {view, $$, calls} = mount();
+  view.renderSidebar(sidebar());
+  groupToggle($$, 'apps').click();
+  groupToggle($$, 'core').click();
+
+  groupToggle($$, 'apps').click();
+
+  assert.deepEqual(kindGroups($$), expandedOnly('core'));
+  assert.equal(groupToggle($$, 'apps').getAttribute('aria-expanded'), 'false');
+  assert.deepEqual(calls, [
+    ['onGroupsExpanded', ['apps']], ['onGroupsExpanded', ['apps', 'core']], ['onGroupsExpanded', ['core']],
   ]);
-  assert.deepEqual(rows, [
-    ['Gateway', 'gateway.networking.k8s.io', '1'],
-    ['Service', 'core', '9'],
-    ['Deployment', 'apps', '12'],
-    ['ReplicaSet', 'apps', '14'],
-    ['Pod', 'core', '42'],
-    ['Secret', 'core', '12'],
-  ]);
-  assert.ok($$('#kind-list li').every((li) => li.querySelector('label input[type="checkbox"]')),
-      'every type has a labelled checkbox');
+});
+
+test('remembered expanded groups can be given before or after the list is shown', () => {
+  const {view, $$, calls} = mount();
+
+  view.setExpandedGroups(['apps', 'no.longer.installed']);
+  view.renderSidebar(sidebar());
+  assert.deepEqual(kindGroups($$), expandedOnly('apps'));
+
+  view.setExpandedGroups(['core']);
+  assert.deepEqual(kindGroups($$), expandedOnly('core'));
+  assert.deepEqual(calls, [], 'restoring is not reported back');
+});
+
+test('a refresh keeps groups as they are, and the checkbox of a collapsed group acts on all of its types', () => {
+  const {view, $$, calls} = mount();
+  view.setExpandedGroups(['core']);
+  view.renderSidebar(sidebar({filters: filters.setKindHidden(filters.defaultFilters(), 'apps/ReplicaSet', true)}));
+
+  view.renderSidebar(sidebar({
+    overview: fx.overview({revision: 2000}),
+    filters: filters.setKindHidden(filters.defaultFilters(), 'apps/ReplicaSet', true),
+  }));
+
+  assert.deepEqual(kindGroups($$), expandedOnly('core'));
+  assert.equal(groupBox($$, 'apps').indeterminate, true, 'the heading still tells that only some are hidden');
+  groupBox($$, 'apps').click();
+  assert.deepEqual(calls, [['onKindsHidden', ['apps/Deployment', 'apps/ReplicaSet'], false]]);
+});
+
+test('narrowing the list shows the matching types of collapsed groups until the text is cleared', () => {
+  const {view, $, $$, calls} = mount();
+  view.renderSidebar(sidebar());
+
+  type($('#kind-search'), 'deploy');
+
+  assert.deepEqual(kindGroups($$), [['apps', '12', [['Deployment', '12']]]]);
+  assert.equal(groupToggle($$, 'apps').getAttribute('aria-expanded'), 'true');
+  assert.equal(groupToggle($$, 'apps').disabled, true, 'while narrowing, everything that matches is listed');
+
+  type($('#kind-search'), '');
+
+  assert.deepEqual(kindGroups($$), expandedOnly(), 'the group is collapsed again');
+  assert.equal(groupToggle($$, 'apps').disabled, false);
+  assert.deepEqual(calls, [], 'narrowing does not change what is remembered');
+});
+
+test('using the button of a group keeps the keyboard focus on it', () => {
+  const {view, document, $$} = mount();
+  view.renderSidebar(sidebar());
+  groupToggle($$, 'apps').focus();
+
+  groupToggle($$, 'apps').click();
+
+  assert.equal(document.activeElement, groupToggle($$, 'apps'));
+  assert.ok(document.activeElement.isConnected);
+});
+
+test('a group whose name is not a plain word can be expanded like any other', () => {
+  const {view, $$} = mount();
+  const group = 'a"] [b=\'c\'] > *';
+  const kinds = [{kindId: `${group}/Widget`, group, version: 'v1', kind: 'Widget', namespaced: true, count: 3,
+                  rollup: fx.rollup(3, 0, 0)}];
+  view.renderSidebar(sidebar({overview: fx.overview({kinds})}));
+  assert.deepEqual(kindGroups($$), [[group, '3', []]]);
+
+  groupToggle($$, group).click();
+
+  assert.deepEqual(kindGroups($$), [[group, '3', [['Widget', '3']]]]);
 });
 
 test('hidden resource types are unchecked', () => {
-  const {view, $$} = mount();
+  const {view, $$} = mount({expandGroups: true});
   const hidden = filters.setKindHidden(filters.defaultFilters(), 'core/Secret', true);
 
   view.renderSidebar(sidebar({filters: hidden}));
@@ -214,7 +422,7 @@ test('hidden resource types are unchecked', () => {
 });
 
 test('unchecking a resource type hides it, checking shows it again', () => {
-  const {view, $$, calls} = mount();
+  const {view, $$, calls} = mount({expandGroups: true});
   view.renderSidebar(sidebar({filters: filters.setKindHidden(filters.defaultFilters(), 'core/Secret', true)}));
   const box = (kindId) => $$('#kind-list input').find((i) => i.dataset.kindId === kindId);
 
@@ -235,7 +443,7 @@ test('All and None flip every resource type', () => {
 });
 
 test('the text box narrows the resource type list', () => {
-  const {view, $, $$} = mount();
+  const {view, $, $$} = mount({expandGroups: true});
   view.renderSidebar(sidebar());
   const kinds = () => $$('#kind-list .kind-name').map((e) => e.textContent);
 
@@ -246,11 +454,11 @@ test('the text box narrows the resource type list', () => {
   assert.deepEqual(kinds(), ['Deployment', 'ReplicaSet'], 'a refresh keeps the narrowing');
 
   type($('#kind-search'), '');
-  assert.equal(kinds().length, 6);
+  assert.deepEqual(kinds(), ['Service', 'Pod', 'Secret', 'Deployment', 'ReplicaSet', 'Gateway']);
 });
 
 test('a refresh keeps the focus on the resource type checkbox being used', () => {
-  const {view, document, $$} = mount();
+  const {view, document, $$} = mount({expandGroups: true});
   view.renderSidebar(sidebar());
   $$('#kind-list input').find((i) => i.dataset.kindId === 'core/Secret').focus();
 
@@ -258,6 +466,66 @@ test('a refresh keeps the focus on the resource type checkbox being used', () =>
 
   assert.equal(document.activeElement.dataset.kindId, 'core/Secret');
   assert.ok(document.activeElement.isConnected);
+});
+
+// --- Theme ---------------------------------------------------------------------
+
+test('the page starts in the night theme and the theme button offers the day theme', () => {
+  const {document, $} = mount();
+
+  assert.notEqual(document.documentElement.dataset.theme, 'day');
+  assert.match($('#theme-toggle').textContent, /day/i);
+  assert.equal($('#theme-toggle').getAttribute('aria-label'), 'Switch to the day theme');
+});
+
+test('setting a theme marks the page with it and turns the button into the way back', () => {
+  const {document, view, $, calls} = mount();
+
+  view.setTheme('day');
+  assert.equal(document.documentElement.dataset.theme, 'day');
+  assert.match($('#theme-toggle').textContent, /night/i);
+  assert.doesNotMatch($('#theme-toggle').textContent, /day/i);
+  assert.equal($('#theme-toggle').getAttribute('aria-label'), 'Switch to the night theme');
+  assert.equal($('#theme-toggle').title, 'Switch to the night theme');
+
+  view.setTheme('night');
+  assert.equal(document.documentElement.dataset.theme, 'night');
+  assert.match($('#theme-toggle').textContent, /day/i);
+  assert.equal($('#theme-toggle').getAttribute('aria-label'), 'Switch to the day theme');
+  assert.deepEqual(calls, [], 'restoring a theme is not reported back');
+});
+
+test('the theme button switches the theme and reports the choice', () => {
+  const {document, $, calls} = mount();
+
+  $('#theme-toggle').click();
+  assert.equal(document.documentElement.dataset.theme, 'day');
+
+  $('#theme-toggle').click();
+  assert.equal(document.documentElement.dataset.theme, 'night');
+  assert.deepEqual(calls, [['onTheme', 'day'], ['onTheme', 'night']]);
+});
+
+test('the theme button follows a day theme that was applied before the app started', () => {
+  const {document} = loadShell();
+  // What js/theme-boot.js does for a remembered day theme.
+  document.documentElement.dataset.theme = 'day';
+  const {handlers, calls} = recorder();
+  viewModule.createView(document, handlers);
+
+  document.getElementById('theme-toggle').click();
+
+  assert.equal(document.documentElement.dataset.theme, 'night');
+  assert.deepEqual(calls, [['onTheme', 'night']]);
+});
+
+test('a theme the app does not know is shown as night', () => {
+  const {document, view, $} = mount();
+
+  view.setTheme('pink"><img src=x>');
+
+  assert.equal(document.documentElement.dataset.theme, 'night');
+  assert.match($('#theme-toggle').textContent, /day/i);
 });
 
 // --- Application error -------------------------------------------------------

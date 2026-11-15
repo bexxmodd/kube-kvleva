@@ -332,7 +332,7 @@ status: {phase: Failed}
 	}
 	s.SetKindError("example.io/Widget", "widgets.example.io is forbidden")
 
-	got := s.Overview()
+	got := s.Overview(OverviewOptions{})
 	want := Overview{
 		Sync: Sync{
 			Ready:       true,
@@ -364,7 +364,7 @@ status: {phase: Failed}
 
 func TestOverviewIsNotReadyUntilEveryKindHasLoaded(t *testing.T) {
 	s := New()
-	if s.Overview().Sync.Ready {
+	if s.Overview(OverviewOptions{}).Sync.Ready {
 		t.Errorf("Overview().Sync.Ready = true before any resource type is known, want false")
 	}
 	pods := Kind{Version: "v1", Kind: "Pod", Namespaced: true}
@@ -372,11 +372,11 @@ func TestOverviewIsNotReadyUntilEveryKindHasLoaded(t *testing.T) {
 	s.AddKind(pods)
 	s.AddKind(nodes)
 	s.MarkSynced(pods.ID())
-	if s.Overview().Sync.Ready {
+	if s.Overview(OverviewOptions{}).Sync.Ready {
 		t.Errorf("Overview().Sync.Ready = true while nodes are still loading, want false")
 	}
 	s.MarkSynced(nodes.ID())
-	if !s.Overview().Sync.Ready {
+	if !s.Overview(OverviewOptions{}).Sync.Ready {
 		t.Errorf("Overview().Sync.Ready = false after every resource type loaded, want true")
 	}
 }
@@ -389,7 +389,7 @@ kind: ConfigMap
 metadata: {namespace: orphaned, name: settings}
 `)
 
-	got := s.Overview().Namespaces
+	got := s.Overview(OverviewOptions{}).Namespaces
 	want := []NamespaceSummary{{Name: "orphaned", Health: "green", Count: 1, Rollup: Rollup{Green: 1}}}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("Overview().Namespaces diff (-want +got):\n%s", diff)
@@ -411,7 +411,7 @@ func TestSubscriptionReportsChanges(t *testing.T) {
 	}
 	got := sub.Take()
 	want := Change{
-		Revision: s.Overview().Revision,
+		Revision: s.Overview(OverviewOptions{}).Revision,
 		Changed:  []string{"pod-web-7d4b9c-abcde"},
 		Deleted:  []string{"node-worker-1"},
 	}
@@ -452,15 +452,15 @@ metadata: {namespace: default, name: cm-%03d}
 func TestRevisionAdvancesOnlyOnRealChanges(t *testing.T) {
 	s := New()
 	add(t, s, podWeb)
-	before := s.Overview().Revision
+	before := s.Overview(OverviewOptions{}).Revision
 
 	add(t, s, podWeb) // Same resourceVersion: a relist, not a change.
-	if got := s.Overview().Revision; got != before {
+	if got := s.Overview(OverviewOptions{}).Revision; got != before {
 		t.Errorf("revision after re-adding an unchanged resource = %d, want %d", got, before)
 	}
 
 	add(t, s, strings.Replace(podWeb, "labels: {app: web}", "labels: {app: web}\n  resourceVersion: \"2\"", 1))
-	if got := s.Overview().Revision; got <= before {
+	if got := s.Overview(OverviewOptions{}).Revision; got <= before {
 		t.Errorf("revision after a changed resource = %d, want more than %d", got, before)
 	}
 }
@@ -532,7 +532,7 @@ metadata: {namespace: default, name: new}
 	if diff := cmp.Diff(wantChange, change); diff != "" {
 		t.Errorf("Take() after PruneKind diff (-want +got):\n%s", diff)
 	}
-	if got := s.Overview().Sync.KindsSynced; got != 1 {
+	if got := s.Overview(OverviewOptions{}).Sync.KindsSynced; got != 1 {
 		t.Errorf("Overview().Sync.KindsSynced after PruneKind = %d, want 1", got)
 	}
 }
@@ -545,7 +545,7 @@ func TestPruneKindClearsAnEarlierLoadingError(t *testing.T) {
 
 	s.PruneKind(widgets.ID(), nil)
 
-	if got := s.Overview().Sync.Errors; len(got) != 0 {
+	if got := s.Overview(OverviewOptions{}).Sync.Errors; len(got) != 0 {
 		t.Errorf("Overview().Sync.Errors after a successful load = %+v, want none", got)
 	}
 }
@@ -565,7 +565,7 @@ metadata: {namespace: default, name: gadget}
 	if diff := cmp.Diff([]string{"Deployment/web"}, names(s.List(Query{Scope: ScopeAll}))); diff != "" {
 		t.Errorf("List(all) after RemoveKind diff (-want +got):\n%s", diff)
 	}
-	if got := len(s.Overview().Kinds); got != 0 {
+	if got := len(s.Overview(OverviewOptions{}).Kinds); got != 0 {
 		t.Errorf("Overview().Kinds has %d entries after RemoveKind, want 0", got)
 	}
 }

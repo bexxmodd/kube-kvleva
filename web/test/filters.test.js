@@ -12,9 +12,20 @@ test('default filters show everything and send no filter parameters', () => {
     health: {green: true, yellow: true, red: true},
     hiddenKinds: [],
     q: '',
-    connections: 'all',
+    system: false,
   });
   assert.deepEqual(filters.toQuery(f), {});
+});
+
+test('system resources are off by default and requested only when switched on', () => {
+  const off = filters.defaultFilters();
+  const on = filters.setSystem(off, true);
+
+  assert.equal(off.system, false);
+  assert.deepEqual(filters.toQuery(off), {}, 'off sends nothing: the backend hides them by default');
+  assert.deepEqual(filters.toQuery(on), {system: 'true'});
+  assert.deepEqual(filters.toQuery(filters.setSystem(on, false)), {});
+  assert.equal(off.system, false, 'input must not be mutated');
 });
 
 test('unchecked health values are left out of the health parameter', () => {
@@ -78,13 +89,12 @@ test('the search text is trimmed and sent as q', () => {
   assert.deepEqual(filters.toQuery(filters.setQuery(f, '   ')), {});
 });
 
-test('the connection mode is one of all, selected, off and is not a query parameter', () => {
-  const f = filters.setConnections(filters.defaultFilters(), 'selected');
+test('a connection mode saved by an earlier version is dropped', () => {
+  // Reference arrows and their mode control were removed; filters saved
+  // while they existed still carry the setting.
+  const saved = JSON.stringify({...filters.defaultFilters(), q: 'web', connections: 'off'});
 
-  assert.equal(f.connections, 'selected');
-  assert.deepEqual(filters.toQuery(f), {});
-  assert.equal(filters.setConnections(f, 'off').connections, 'off');
-  assert.equal(filters.setConnections(f, 'sideways').connections, 'selected', 'unknown modes are ignored');
+  assert.deepEqual(filters.deserialize(saved), {...filters.defaultFilters(), q: 'web'});
 });
 
 test('filters survive a serialize / deserialize round trip', () => {
@@ -92,7 +102,7 @@ test('filters survive a serialize / deserialize round trip', () => {
   f = filters.toggleHealth(f, 'green');
   f = filters.setKindHidden(f, 'core/Secret', true);
   f = filters.setQuery(f, 'web');
-  f = filters.setConnections(f, 'off');
+  f = filters.setSystem(f, true);
 
   assert.deepEqual(filters.deserialize(filters.serialize(f)), f);
 });
@@ -108,7 +118,7 @@ test('deserialize repairs individual invalid fields', () => {
     health: {green: false, yellow: 'yes', red: true, purple: true},
     hiddenKinds: ['core/Secret', 7, null, 'core/Secret', {}],
     q: 12,
-    connections: 'sideways',
+    system: 'yes',
     extra: 'ignored',
   }));
 
@@ -116,8 +126,14 @@ test('deserialize repairs individual invalid fields', () => {
     health: {green: false, yellow: true, red: true},
     hiddenKinds: ['core/Secret'],
     q: '',
-    connections: 'all',
+    system: false,
   });
+});
+
+test('filters saved before the system switch existed keep system resources off', () => {
+  const saved = JSON.stringify({health: {green: true, yellow: true, red: true}, hiddenKinds: [], q: 'web'});
+
+  assert.equal(filters.deserialize(saved).system, false);
 });
 
 test('deserialize never yields a filter that hides every health', () => {
@@ -147,6 +163,41 @@ test('loading uses defaults when storage is empty, missing or broken', () => {
   assert.deepEqual(filters.loadFilters(broken), filters.defaultFilters());
   assert.doesNotThrow(() => filters.saveFilters(broken, filters.defaultFilters()));
   assert.doesNotThrow(() => filters.saveFilters(undefined, filters.defaultFilters()));
+});
+
+test('resource types are grouped by API group: core first, the others alphabetically', () => {
+  const groups = filters.groupKinds(fx.overview().kinds);
+
+  assert.deepEqual(groups.map((g) => [g.group, g.kinds.map((k) => k.kind), g.count]), [
+    ['core', ['Service', 'Pod', 'Secret'], 63],
+    ['apps', ['Deployment', 'ReplicaSet'], 26],
+    ['gateway.networking.k8s.io', ['Gateway'], 1],
+  ], 'inside a group the types keep the order of the overview');
+  assert.deepEqual(filters.groupKinds([]), []);
+});
+
+test('a group is fully shown, fully hidden, or partly hidden', () => {
+  const kinds = fx.overview().kinds;
+  const core = filters.groupKinds(kinds)[0].kinds;
+  let f = filters.defaultFilters();
+  assert.equal(filters.groupState(f, core), 'shown');
+
+  f = filters.setKindHidden(f, 'core/Secret', true);
+  assert.equal(filters.groupState(f, core), 'partly');
+
+  f = filters.setKindsHidden(f, ['core/Service', 'core/Pod'], true);
+  assert.equal(filters.groupState(f, core), 'hidden');
+});
+
+test('several resource types are hidden or shown in one step', () => {
+  let f = filters.setKindHidden(filters.defaultFilters(), 'apps/Deployment', true);
+
+  f = filters.setKindsHidden(f, ['core/Secret', 'core/Pod', 'core/Secret'], true);
+  assert.deepEqual(f.hiddenKinds, ['apps/Deployment', 'core/Pod', 'core/Secret'], 'sorted, without duplicates');
+
+  f = filters.setKindsHidden(f, ['core/Pod', 'core/Service'], false);
+  assert.deepEqual(f.hiddenKinds, ['apps/Deployment', 'core/Secret'], 'the others stay as they were');
+  assert.deepEqual(filters.toQuery(f), {hideKinds: 'apps/Deployment,core/Secret'});
 });
 
 test('the resource type list is narrowed by kind or group, keeping its order', () => {

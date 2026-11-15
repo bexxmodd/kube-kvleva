@@ -201,7 +201,11 @@ export function fakeBackend({overview, lists = {}, details = {}, containers = {}
     if (backend.gate) await backend.gate(request);
     if (backend.failWith) return json(backend.failWith, {error: 'backend unavailable'});
 
-    if (parsed.pathname === '/api/overview') return json(200, backend.overview);
+    // `overview` may be a function of the query parameters, for tests in
+    // which the answer depends on the system resources switch.
+    const overviewFor = (query) => (typeof backend.overview === 'function' ? backend.overview(query) : backend.overview);
+
+    if (parsed.pathname === '/api/overview') return json(200, overviewFor(params));
 
     if (parsed.pathname === '/api/resources') {
       const scope = ['namespace', 'cluster', 'nodes', 'parent', 'node'].find((name) => name in params);
@@ -211,7 +215,7 @@ export function fakeBackend({overview, lists = {}, details = {}, containers = {}
       const limit = Number(params.limit ?? 100);
       return json(200, {
         items: all.slice(offset, offset + limit), total: all.length, offset, limit,
-        revision: backend.overview.revision,
+        revision: overviewFor(params).revision,
       });
     }
 

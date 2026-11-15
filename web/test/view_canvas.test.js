@@ -576,22 +576,6 @@ test('a pod shown both in its namespace and under its node is highlighted in bot
   assert.deepEqual(selectedIds($$), ['pod-1', 'pod-1']);
 });
 
-test('hovering reports the innermost widget under the pointer, once', () => {
-  const {view, byDataId, calls, $} = mount();
-  view.renderCanvas(canvas(rolloutTree()));
-
-  fire(byDataId('dep-1').querySelector('.widget-head .name'), 'mouseover');
-  fire(byDataId('dep-1').querySelector('.widget-head .kind'), 'mouseover');
-  fire(byDataId('pod-1').querySelector('.container'), 'mouseover');
-  fire(byDataId('ns:default').querySelector('.lane-label'), 'mouseover');
-  fire(byDataId('svc-1'), 'mouseover');
-  fire($('#canvas'), 'mouseleave');
-
-  assert.deepEqual(calls, [
-    ['onHover', 'dep-1'], ['onHover', 'pod-1'], ['onHover', null], ['onHover', 'svc-1'], ['onHover', null],
-  ]);
-});
-
 // --- Live refresh: what a re-render must preserve ----------------------------
 
 const focusedDescription = (document) => {
@@ -699,15 +683,14 @@ test('a refresh restores the scroll position of the canvas', () => {
 test('a refresh rebuilds the areas inside the same scroll container', () => {
   const {view, $} = mount();
   view.renderCanvas(canvas(rolloutTree()));
-  const [scroller, content, areas, arrows] = [$('#canvas'), $('#canvas-content'), $('#areas'), $('#arrows')];
+  const [scroller, content, areas] = [$('#canvas'), $('#canvas-content'), $('#areas')];
 
   view.renderCanvas(canvas(rolloutTree()));
 
   assert.equal($('#canvas'), scroller);
   assert.equal($('#canvas-content'), content);
   assert.equal($('#areas'), areas);
-  assert.equal($('#arrows'), arrows);
-  assert.ok(scroller.isConnected && areas.isConnected && arrows.isConnected);
+  assert.ok(scroller.isConnected && areas.isConnected);
 });
 
 // --- Health cues that must not leak between nested boxes ---------------------

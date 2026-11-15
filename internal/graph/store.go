@@ -8,6 +8,7 @@ import (
 	"io"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/bexxmodd/kube-kvleva/internal/health"
 	"github.com/bexxmodd/kube-kvleva/internal/refs"
@@ -36,11 +37,16 @@ type object struct {
 	name            string
 	resourceVersion string
 	createdAt       string
-	rank            int
-	health          health.Result
-	owners          []refs.Owner
-	refs            []refs.Ref
-	selector        *refs.PodSelector
+	// created is createdAt parsed, or the zero time.
+	created time.Time
+	// selfMaintained marks objects Kubernetes keeps by itself; see
+	// selfMaintained in system.go.
+	selfMaintained bool
+	rank           int
+	health         health.Result
+	owners         []refs.Owner
+	refs           []refs.Ref
+	selector       *refs.PodSelector
 	// labels, node, and containers are only kept for Pods.
 	labels     map[string]string
 	node       string
@@ -76,6 +82,9 @@ type Store struct {
 	podsByNode  map[string]index
 	kinds       map[string]*kindState
 	subs        map[*Subscription]struct{}
+	// clusterBorn is when the kube-system namespace was created, or the
+	// zero time while that namespace is not known.
+	clusterBorn time.Time
 }
 
 // New returns an empty Store.
@@ -272,6 +281,9 @@ func (s *Store) put(o *object) bool {
 	if o.kindID == podKindID && o.node != "" {
 		insert(s.podsByNode, o.node, o)
 	}
+	if o.kindID == namespaceKindID && o.name == bootstrapNamespace {
+		s.clusterBorn = o.created
+	}
 	return true
 }
 
@@ -296,6 +308,9 @@ func (s *Store) remove(o *object) {
 	}
 	if o.kindID == podKindID && o.node != "" {
 		evict(s.podsByNode, o.node, o)
+	}
+	if o.kindID == namespaceKindID && o.name == bootstrapNamespace {
+		s.clusterBorn = time.Time{}
 	}
 }
 
@@ -342,6 +357,10 @@ func newObject(kind Kind, obj map[string]any) (*object, error) {
 	o.namespace, _ = metadata["namespace"].(string)
 	o.resourceVersion, _ = metadata["resourceVersion"].(string)
 	o.createdAt, _ = metadata["creationTimestamp"].(string)
+	if created, err := time.Parse(time.RFC3339, o.createdAt); err == nil {
+		o.created = created
+	}
+	o.selfMaintained = selfMaintained(o.kindID, obj)
 	if o.kindID == podKindID {
 		spec, _ := obj["spec"].(map[string]any)
 		o.node, _ = spec["nodeName"].(string)

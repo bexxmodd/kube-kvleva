@@ -102,8 +102,9 @@ func (f *fakeEvents) Events(_ context.Context, namespace, uid string) ([]kube.Ev
 }
 
 var testAssets = fstest.MapFS{
-	"index.html": {Data: []byte("<!doctype html><title>kvleva</title>")},
-	"js/main.js": {Data: []byte("console.log('kvleva');")},
+	"index.html":       {Data: []byte("<!doctype html><title>kvleva</title>")},
+	"js/main.js":       {Data: []byte("console.log('kvleva');")},
+	"fonts/text.woff2": {Data: []byte("wOF2\x00\x01\x00\x00not really a font")},
 }
 
 func newHandler(store *graph.Store, events EventLister) http.Handler {
@@ -141,6 +142,7 @@ func TestServesLocalBrowser(t *testing.T) {
 	}{
 		{name: "page", target: "/", wantBody: "<!doctype html><title>kvleva</title>", wantContentType: "text/html"},
 		{name: "script", target: "/js/main.js", wantBody: "console.log('kvleva');", wantContentType: "text/javascript"},
+		{name: "font", target: "/fonts/text.woff2", wantBody: "wOF2\x00\x01\x00\x00not really a font", wantContentType: "font/woff2"},
 		{name: "liveness", target: "/healthz", wantBody: "ok\n", wantContentType: "text/plain"},
 	}
 	for _, tc := range tests {
@@ -377,6 +379,139 @@ status: {phase: Running, conditions: [{type: Ready, status: "True"}]}
 				t.Errorf("GET %s total = %d, want %d", tc.target, page.Total, tc.wantTotal)
 			}
 		})
+	}
+}
+
+func TestListResourcesLeavesReferencesToTheDetails(t *testing.T) {
+	store := newStore(t, nodeManifest, `
+apiVersion: v1
+kind: Pod
+metadata: {namespace: default, name: placed, uid: pod-placed, resourceVersion: "1"}
+spec: {nodeName: worker-1}
+`)
+	handler := newHandler(store, nil)
+
+	rec := serve(handler, localRequest(http.MethodGet, "/api/resources?namespace=default"))
+	var page struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil || len(page.Items) != 1 {
+		t.Fatalf("GET /api/resources?namespace=default = %d %s, want one item (%v)", rec.Code, rec.Body, err)
+	}
+	// References are only shown in the details of a resource, so list items
+	// do not pay for resolving them.
+	for _, field := range []string{"refs", "refsTruncated"} {
+		if _, ok := page.Items[0][field]; ok {
+			t.Errorf("GET /api/resources?namespace=default item has field %q, want references only in the details", field)
+		}
+	}
+
+	rec = serve(handler, localRequest(http.MethodGet, "/api/resources/pod-placed"))
+	var detail struct {
+		Outgoing []graph.Link `json:"outgoing"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("GET /api/resources/pod-placed returned unreadable JSON: %v\n%s", err, rec.Body)
+	}
+	if len(detail.Outgoing) != 1 || detail.Outgoing[0].Name != "worker-1" {
+		t.Errorf("GET /api/resources/pod-placed outgoing = %+v, want the reference to node worker-1", detail.Outgoing)
+	}
+}
+
+func TestSystemResourcesAreOffUnlessAskedFor(t *testing.T) {
+	store := newStore(t, configMapManifest, `
+apiVersion: v1
+kind: Namespace
+metadata: {name: kube-system, uid: namespace-kube-system, resourceVersion: "1"}
+status: {phase: Active}
+`, `
+apiVersion: v1
+kind: Pod
+metadata: {namespace: kube-system, name: etcd, uid: pod-etcd, resourceVersion: "1"}
+status: {phase: Failed}
+`)
+	handler := newHandler(store, nil)
+	tests := []struct {
+		name string
+		// query is appended to both endpoints.
+		query          string
+		wantResources  []string
+		wantNamespaces []string
+		wantHealth     graph.Rollup
+	}{
+		{
+			name:           "off_by_default",
+			wantResources:  []string{"ConfigMap/settings"},
+			wantNamespaces: []string{"default"},
+			wantHealth:     graph.Rollup{Green: 1},
+		},
+		{
+			name:           "explicitly_off",
+			query:          "system=false",
+			wantResources:  []string{"ConfigMap/settings"},
+			wantNamespaces: []string{"default"},
+			wantHealth:     graph.Rollup{Green: 1},
+		},
+		{
+			name:           "switched_on",
+			query:          "system=true",
+			wantResources:  []string{"Namespace/kube-system", "Pod/etcd", "ConfigMap/settings"},
+			wantNamespaces: []string{"default", "kube-system"},
+			wantHealth:     graph.Rollup{Green: 2, Red: 1},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := serve(handler, localRequest(http.MethodGet, "/api/resources?"+tc.query))
+			var page struct {
+				Items []graph.Summary `json:"items"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil || rec.Code != http.StatusOK {
+				t.Fatalf("GET /api/resources?%s = %d %s (%v)", tc.query, rec.Code, rec.Body, err)
+			}
+			var resources []string
+			for _, item := range page.Items {
+				resources = append(resources, item.Kind+"/"+item.Name)
+			}
+			if diff := cmp.Diff(tc.wantResources, resources); diff != "" {
+				t.Errorf("GET /api/resources?%s diff (-want +got):\n%s", tc.query, diff)
+			}
+
+			rec = serve(handler, localRequest(http.MethodGet, "/api/overview?"+tc.query))
+			var overview struct {
+				Health          graph.Rollup `json:"health"`
+				SystemResources int          `json:"systemResources"`
+				Namespaces      []struct {
+					Name string `json:"name"`
+				} `json:"namespaces"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &overview); err != nil || rec.Code != http.StatusOK {
+				t.Fatalf("GET /api/overview?%s = %d %s (%v)", tc.query, rec.Code, rec.Body, err)
+			}
+			var namespaces []string
+			for _, ns := range overview.Namespaces {
+				namespaces = append(namespaces, ns.Name)
+			}
+			if diff := cmp.Diff(tc.wantNamespaces, namespaces); diff != "" {
+				t.Errorf("GET /api/overview?%s namespaces diff (-want +got):\n%s", tc.query, diff)
+			}
+			if overview.Health != tc.wantHealth {
+				t.Errorf("GET /api/overview?%s health = %+v, want %+v", tc.query, overview.Health, tc.wantHealth)
+			}
+			if overview.SystemResources != 2 {
+				t.Errorf("GET /api/overview?%s systemResources = %d, want 2 whatever the switch says", tc.query, overview.SystemResources)
+			}
+		})
+	}
+}
+
+func TestSystemParameterMustBeBoolean(t *testing.T) {
+	handler := newHandler(newStore(t, podManifest), nil)
+	for _, target := range []string{"/api/resources?system=maybe", "/api/overview?system=maybe"} {
+		rec := serve(handler, localRequest(http.MethodGet, target))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("GET %s = %d %s, want %d", target, rec.Code, rec.Body, http.StatusBadRequest)
+		}
 	}
 }
 

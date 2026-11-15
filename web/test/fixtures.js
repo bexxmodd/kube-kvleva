@@ -37,22 +37,6 @@ export function summary(overrides = {}) {
     rollup: rollup(health === 'green' ? 1 : 0, health === 'yellow' ? 1 : 0, health === 'red' ? 1 : 0),
     selfMatch: true,
     path: ['ns:default'],
-    refs: [],
-    refsTruncated: false,
-    ...overrides,
-  };
-}
-
-/** A reference entry as found in ResourceSummary.refs. */
-export function ref(overrides = {}) {
-  return {
-    uid: 'uid-target',
-    kindId: 'core/ConfigMap',
-    kind: 'ConfigMap',
-    namespace: 'default',
-    name: 'target',
-    relation: 'ref',
-    path: ['ns:default'],
     ...overrides,
   };
 }
@@ -88,10 +72,6 @@ export function gateway() {
   return summary({
     uid: UID.gateway, kindId: 'gateway.networking.k8s.io/Gateway',
     group: 'gateway.networking.k8s.io', kind: 'Gateway', name: 'gw', reason: 'Programmed',
-    refs: [ref({
-      uid: UID.gatewayClass, kindId: 'gateway.networking.k8s.io/GatewayClass', kind: 'GatewayClass',
-      namespace: '', name: 'kvleva', relation: 'gatewayClassName', path: ['cluster'],
-    })],
   });
 }
 
@@ -99,24 +79,11 @@ export function route() {
   return summary({
     uid: UID.route, kindId: 'gateway.networking.k8s.io/HTTPRoute',
     group: 'gateway.networking.k8s.io', kind: 'HTTPRoute', name: 'route', reason: 'Accepted',
-    refs: [
-      ref({
-        uid: UID.gateway, kindId: 'gateway.networking.k8s.io/Gateway', kind: 'Gateway',
-        name: 'gw', relation: 'parentRefs',
-      }),
-      ref({uid: UID.service, kindId: 'core/Service', kind: 'Service', name: 'web', relation: 'backendRefs'}),
-    ],
   });
 }
 
 export function service() {
-  return summary({
-    uid: UID.service, kindId: 'core/Service', kind: 'Service', name: 'web',
-    refs: [ref({
-      uid: UID.pod, kindId: 'core/Pod', kind: 'Pod', name: 'web-7d4b9c-abcde', relation: 'selector',
-      path: ['ns:default', UID.deployment, UID.replicaSet],
-    })],
-  });
+  return summary({uid: UID.service, kindId: 'core/Service', kind: 'Service', name: 'web'});
 }
 
 export function deployment() {
@@ -146,12 +113,6 @@ export function pod() {
       {name: 'app', image: 'nginx:1.27', init: false, health: 'yellow',
        state: 'waiting', reason: 'ContainerCreating', ready: false, restarts: 0},
     ],
-    refs: [
-      ref({uid: UID.node, kindId: 'core/Node', kind: 'Node', namespace: '',
-           name: 'kvleva-control-plane', relation: 'nodeName', path: ['cluster']}),
-      ref({uid: UID.configMap, kindId: 'core/ConfigMap', kind: 'ConfigMap',
-           name: 'web-config', relation: 'volumes'}),
-    ],
   });
 }
 
@@ -166,6 +127,7 @@ export function overview(overrides = {}) {
     revision: 1042,
     sync: {ready: true, kindsTotal: 61, kindsSynced: 61, errors: []},
     health: rollup(310, 4, 1),
+    systemResources: 287,
     kinds: [
       {kindId: 'gateway.networking.k8s.io/Gateway', group: 'gateway.networking.k8s.io', version: 'v1',
        kind: 'Gateway', namespaced: true, count: 1, rollup: rollup(1, 0, 0)},

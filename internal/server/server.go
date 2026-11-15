@@ -193,11 +193,16 @@ func (a *api) healthz(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintln(w, "ok")
 }
 
-func (a *api) overview(w http.ResponseWriter, _ *http.Request) {
+func (a *api) overview(w http.ResponseWriter, r *http.Request) {
+	showSystem, err := systemSwitch(r.URL.Query())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, struct {
 		Cluster kube.Info `json:"cluster"`
 		graph.Overview
-	}{a.opts.Cluster, a.opts.Store.Overview()})
+	}{a.opts.Cluster, a.opts.Store.Overview(graph.OverviewOptions{HideSystem: !showSystem})})
 }
 
 func (a *api) resources(w http.ResponseWriter, r *http.Request) {
@@ -372,7 +377,12 @@ func parseQuery(values url.Values) (graph.Query, error) {
 	}
 	query.Text = values.Get("q")
 
-	var err error
+	showSystem, err := systemSwitch(values)
+	if err != nil {
+		return graph.Query{}, err
+	}
+	query.HideSystem = !showSystem
+
 	if query.Limit, err = nonNegative(values, "limit"); err != nil {
 		return graph.Query{}, err
 	}
@@ -380,6 +390,21 @@ func parseQuery(values url.Values) (graph.Query, error) {
 		return graph.Query{}, err
 	}
 	return query, nil
+}
+
+// systemSwitch reads the "system" parameter: whether system resources are
+// part of the answer. They are left out unless it is true, which is the
+// state the switch in the web interface starts in.
+func systemSwitch(values url.Values) (bool, error) {
+	raw := values.Get("system")
+	if raw == "" {
+		return false, nil
+	}
+	show, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, errors.New("system must be true or false")
+	}
+	return show, nil
 }
 
 func splitList(value string) []string {

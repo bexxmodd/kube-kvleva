@@ -1,6 +1,21 @@
-/* kvleva: dark, calm, information-dense. No imports, fonts or images: the page
-   is served under the CSP default-src 'self' and must fetch nothing else. */
+/* kvleva: calm, information-dense, in a night and a day theme. No imports or
+   images, and no font but the one shipped next to this file: the page is
+   served under the CSP default-src 'self' and must fetch nothing else. */
 
+/* Inter (SIL Open Font License, see fonts/Inter-LICENSE.txt). One variable
+   file holds every weight. Shipping it makes text look the same on every
+   machine instead of depending on the fonts that happen to be installed. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../fonts/InterVariable.woff2") format("woff2");
+}
+
+/* The night theme, which is the default. Every color of the app is defined
+   here and again in the day theme below; nothing else names a color, so
+   switching the theme recolors everything. */
 :root {
   color-scheme: dark;
 
@@ -9,10 +24,6 @@
   --yellow: #d29922;
   --red: #f85149;
 
-  /* Reference arrows are neutral on purpose (never a health color). */
-  --arrow: #8b949e;
-  --arrow-emphasized: #58a6ff;
-
   --bg: #0d1117;
   --panel: #161b22;
   --panel-raised: #1c2128;
@@ -20,10 +31,44 @@
   --text: #e6edf3;
   --muted: #8b949e;
   --accent: #58a6ff;
+  /* What is drawn on top of the accent color, such as the knob of a switch. */
+  --on-accent: #0d1117;
+
+  /* YAML in the details panel. */
+  --tok-key: #79c0ff;
+  --tok-string: #a5d6ff;
+  --tok-number: #f2cc60;
+  --tok-keyword: #d2a8ff;
+
   --health: var(--muted);
 
-  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+/* The day theme: js/theme-boot.js and the theme button set data-theme on the
+   root element. The health colors are darker than at night so that they
+   stand out as clearly on a light page. */
+:root[data-theme="day"] {
+  color-scheme: light;
+
+  --green: #177530;
+  --yellow: #855800;
+  --red: #c5202b;
+
+  --bg: #f6f8fa;
+  --panel: #ffffff;
+  --panel-raised: #eef1f4;
+  --line: #d0d7de;
+  --text: #1f2328;
+  --muted: #59636e;
+  --accent: #0860ca;
+  --on-accent: #ffffff;
+
+  --tok-key: #0550ae;
+  --tok-string: #0a3069;
+  --tok-number: #953800;
+  --tok-keyword: #7a45d8;
 }
 
 *,
@@ -45,7 +90,7 @@ body {
   flex-direction: column;
   background: var(--bg);
   color: var(--text);
-  font: 13px/1.4 var(--sans);
+  font: 14px/1.4 var(--sans);
 }
 
 h1,
@@ -122,7 +167,7 @@ input[type="search"] {
   border-radius: 4px;
   background: var(--panel-raised);
   padding: 1px 6px;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
 }
 
@@ -135,7 +180,7 @@ input[type="search"] {
 
 .dot {
   color: var(--health);
-  font-size: 11px;
+  font-size: 12px;
   flex: none;
 }
 
@@ -147,14 +192,14 @@ input[type="search"] {
   color: var(--health);
   border-radius: 999px;
   padding: 0 8px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 
 .rollup {
   display: inline-flex;
   gap: 8px;
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
 }
 
@@ -179,8 +224,19 @@ input[type="search"] {
   position: relative;
 }
 
+/* Hides and shows the filters panel; sits top left, above that panel. */
+.sidebar-toggle {
+  flex: none;
+  white-space: nowrap;
+}
+
+.sidebar-toggle[aria-expanded="false"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .app-name {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 700;
   letter-spacing: 0.02em;
 }
@@ -232,6 +288,72 @@ input[type="search"] {
   color: var(--yellow);
 }
 
+/* The system resources switch: a checkbox drawn as a sliding toggle. The real
+   input stays in the page (and focusable) but is visually replaced. */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  padding: 2px 10px 2px 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.switch-track {
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--line);
+  transition: background 0.15s;
+}
+
+.switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 0.15s, background 0.15s;
+}
+
+.switch input:checked + .switch-track {
+  background: var(--accent);
+}
+
+.switch input:checked + .switch-track::after {
+  transform: translateX(14px);
+  background: var(--on-accent);
+}
+
+.switch input:focus-visible + .switch-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.switch-label {
+  font-weight: 600;
+}
+
+.switch-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .pills {
   display: flex;
   gap: 6px;
@@ -258,6 +380,12 @@ input[type="search"] {
   width: 220px;
 }
 
+/* Switches between the night and the day theme; sits top right. */
+.theme-toggle {
+  flex: none;
+  white-space: nowrap;
+}
+
 /* --- Layout --------------------------------------------------------------- */
 
 .layout {
@@ -269,10 +397,36 @@ input[type="search"] {
 .sidebar {
   flex: none;
   width: 260px;
+  /* The user can drag the divider; whatever they choose, and however the
+     window is resized afterwards, the panel never exceeds a third of it. */
+  max-width: calc(100vw / 3);
   overflow: auto;
   padding: 10px 12px;
   background: var(--panel);
-  border-right: 1px solid var(--line);
+}
+
+/* The dividing line between a side panel and the canvas. It is wider than
+   the line it draws so that it is easy to grab. */
+.resizer {
+  flex: none;
+  width: 7px;
+  cursor: col-resize;
+  background: linear-gradient(to right, transparent 3px, var(--line) 3px, var(--line) 4px, transparent 4px);
+  touch-action: none;
+}
+
+.resizer:hover,
+.resizer:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+
+/* While a divider is dragged the pointer leaves it; keep the resize cursor
+   and do not select text on the way. */
+.resizing-panel,
+.resizing-panel * {
+  cursor: col-resize !important;
+  user-select: none;
 }
 
 .canvas {
@@ -290,11 +444,11 @@ input[type="search"] {
 .drawer {
   flex: none;
   width: 480px;
-  max-width: 50vw;
+  /* Resizable like the filters panel, with the same cap. */
+  max-width: calc(100vw / 3);
   overflow: auto;
   padding: 10px 12px 24px;
   background: var(--panel);
-  border-left: 1px solid var(--line);
   position: relative;
 }
 
@@ -314,7 +468,7 @@ input[type="search"] {
 /* --- Sidebar -------------------------------------------------------------- */
 
 .sidebar-title {
-  font-size: 13px;
+  font-size: 14px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
@@ -344,7 +498,7 @@ input[type="search"] {
 .note {
   margin-top: 6px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .note.error {
@@ -375,10 +529,53 @@ input[type="search"] {
   overflow-wrap: anywhere;
 }
 
-.kind-group {
+/* Resource types are grouped by API group: a heading with a button that
+   collapses the group and a checkbox of its own, then the types of the group,
+   indented under it. */
+.kind-group + .kind-group {
+  margin-top: 6px;
+}
+
+.kind-group-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.kind-group-head {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+
+/* Looks like the open/close buttons of the cluster picture (.toggle), but
+   quieter: there is one on every group heading. */
+.group-toggle {
+  border-color: transparent;
+  background: none;
   color: var(--muted);
-  font-size: 11px;
+}
+
+.group-toggle:hover:not(:disabled) {
+  color: inherit;
+}
+
+.group-toggle:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.kind-group-name {
   overflow-wrap: anywhere;
+}
+
+.kind-group-kinds {
+  list-style: none;
+  margin: 0;
+  /* The button of the heading (20px) and the gap after it (4px) bring a type
+     under the checkbox of its group; 12px more set it in from there. */
+  padding: 0 0 0 36px;
 }
 
 .count {
@@ -402,7 +599,7 @@ input[type="search"] {
 }
 
 .cluster-title {
-  font-size: 14px;
+  font-size: 15px;
   margin-right: auto;
   overflow-wrap: anywhere;
 }
@@ -457,7 +654,7 @@ input[type="search"] {
   width: 120px;
   padding-top: 6px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   text-align: right;
   overflow-wrap: anywhere;
 }
@@ -514,7 +711,7 @@ input[type="search"] {
 
 .kind {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -525,7 +722,7 @@ input[type="search"] {
 
 .reason {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   overflow-wrap: anywhere;
 }
 
@@ -548,7 +745,7 @@ input[type="search"] {
 
 .tag {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -589,39 +786,6 @@ input[type="search"] {
   animation: flash 0.9s ease-out 2;
 }
 
-/* --- Arrows --------------------------------------------------------------- */
-
-.arrows {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-  pointer-events: none;
-}
-
-.arrow {
-  fill: none;
-  stroke: var(--arrow);
-  stroke-width: 1.2;
-  opacity: 0.45;
-}
-
-.arrow.emphasized {
-  stroke: var(--arrow-emphasized);
-  stroke-width: 2;
-  opacity: 1;
-}
-
-#arrowhead path {
-  fill: var(--arrow);
-}
-
-#arrowhead-emphasized path {
-  fill: var(--arrow-emphasized);
-}
-
 /* --- Drawer --------------------------------------------------------------- */
 
 .drawer-close {
@@ -631,7 +795,7 @@ input[type="search"] {
   width: 26px;
   height: 26px;
   padding: 0;
-  font-size: 16px;
+  font-size: 17px;
   line-height: 1;
 }
 
@@ -641,11 +805,11 @@ input[type="search"] {
 
 .drawer-kind {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .drawer-name {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 700;
   overflow-wrap: anywhere;
 }
@@ -663,7 +827,7 @@ input[type="search"] {
   grid-template-columns: max-content 1fr;
   gap: 2px 10px;
   margin: 6px 0 0;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .facts dt {
@@ -689,14 +853,14 @@ input[type="search"] {
 }
 
 .section-title {
-  font-size: 13px;
+  font-size: 14px;
   margin-right: auto;
 }
 
 .subsection-title {
   margin: 8px 0 4px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -708,15 +872,15 @@ input[type="search"] {
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 6px;
-  font: 12px/1.45 var(--mono);
+  font: 13px/1.45 var(--mono);
   white-space: pre;
   tab-size: 2;
 }
 
-.tok-key { color: #79c0ff; }
-.tok-string { color: #a5d6ff; }
-.tok-number { color: #f2cc60; }
-.tok-keyword { color: #d2a8ff; }
+.tok-key { color: var(--tok-key); }
+.tok-string { color: var(--tok-string); }
+.tok-number { color: var(--tok-number); }
+.tok-keyword { color: var(--tok-keyword); }
 .tok-comment { color: var(--muted); font-style: italic; }
 .tok-punct { color: var(--muted); }
 
@@ -727,7 +891,7 @@ input[type="search"] {
 .grid {
   border-collapse: collapse;
   width: 100%;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .grid th,
@@ -781,7 +945,7 @@ input[type="search"] {
 
 .relation {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .missing {

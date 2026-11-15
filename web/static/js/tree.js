@@ -183,14 +183,6 @@ export function childScope(item, listScope) {
   return item.childCount > 0 ? {type: 'parent', uid: item.uid} : null;
 }
 
-/**
- * @param {!Object} tree
- * @return {!Iterable<!Object>} Every loaded ResourceSummary.
- */
-export function* allItems(tree) {
-  for (const list of tree.lists.values()) yield* list.items;
-}
-
 // --- Initial expansion -------------------------------------------------------
 
 /** Clusters up to this many resources start expanded. */
@@ -391,4 +383,41 @@ export function createRefreshScheduler(
       timer = null;
     },
   };
+}
+
+// --- Nearest rendered ancestor -------------------------------------------------
+//
+// Element ids are the uid of a widget, `ns:<name>` for a namespace box,
+// `cluster` for the cluster-wide area and `nodes` for the Nodes area.
+
+const NODE_KIND = 'core/Node';
+const NAMESPACE_KIND = 'core/Namespace';
+
+/**
+ * Ids that can stand for a resource on the page, most specific first: its own
+ * widget, then its containers from the innermost outward.
+ * @param {{uid: string, kindId: string, name: string, path?: !Array<string>}} resource
+ * @return {!Array<string>}
+ */
+function representatives(resource) {
+  const ids = [resource.uid];
+  // A Namespace object is shown as its namespace box, not as a widget.
+  if (resource.kindId === NAMESPACE_KIND) ids.push(`ns:${resource.name}`);
+  const path = resource.path ?? [];
+  for (let i = path.length - 1; i >= 0; i--) {
+    // Nodes are cluster-scoped but live in their own area.
+    ids.push(path[i] === 'cluster' && resource.kindId === NODE_KIND ? 'nodes' : path[i]);
+  }
+  return ids;
+}
+
+/**
+ * Finds what represents a resource on the page: its own widget or, when that
+ * is folded away or filtered out, the nearest rendered box around it.
+ * @param {!Object} resource A ResourceSummary or a Link.
+ * @param {function(string): boolean} isRendered
+ * @return {?string} An element id, or null when nothing of it is rendered.
+ */
+export function lift(resource, isRendered) {
+  return representatives(resource).find(isRendered) ?? null;
 }

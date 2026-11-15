@@ -1,0 +1,434 @@
+# Gateway API resources, several of them misconfigured on purpose, to see how
+# kvleva shows what a Gateway controller reports about them.
+#
+# Needs a Gateway controller, otherwise nothing judges these resources and
+# all of them stay yellow. This file is written for Envoy Gateway, whose
+# install manifest also brings the Gateway API resource types:
+#
+#   kubectl --context kind-kvleva apply --server-side \
+#     -f https://github.com/envoyproxy/gateway/releases/download/v1.10.0/install.yaml
+#   kubectl --context kind-kvleva wait --timeout=4m -n envoy-gateway-system \
+#     deployment/envoy-gateway --for=condition=Available
+#   kubectl --context kind-kvleva apply -f examples/gateway-misconfigured.yaml
+#
+# Remove again with:
+#
+#   kubectl --context kind-kvleva delete -f examples/gateway-misconfigured.yaml
+#
+# Each resource says in a comment what is wrong with it and how kvleva shows
+# it: the color and reason are what Envoy Gateway v1.10.0 reports in the
+# resource's status; another controller may word things differently.
+# Resources without such a comment are correct and are there for contrast.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gateway-demo
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gateway-demo-team-b
+---
+# --- Backends ----------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  namespace: gateway-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: echo}
+  template:
+    metadata:
+      labels: {app: echo}
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+  namespace: gateway-demo
+spec:
+  selector: {app: echo}
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: gateway-demo-team-b
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: api}
+  template:
+    metadata:
+      labels: {app: api}
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: gateway-demo-team-b
+spec:
+  selector: {app: api}
+  ports:
+    - port: 80
+      targetPort: 80
+---
+# --- Gateway classes ---------------------------------------------------------
+# A kind cluster hands out no load balancer addresses, so the proxies of this
+# class are exposed inside the cluster only. Without this, even a correct
+# Gateway would never get an address.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: cluster-ip
+  namespace: gateway-demo
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        type: ClusterIP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: kvleva-demo
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: cluster-ip
+    namespace: gateway-demo
+---
+# WRONG: the parameters this class points to do not exist.
+# Red, "Accepted is False: InvalidParameters"; the parameters are listed under
+# missing references.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: kvleva-demo-bad-parameters
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: no-such-parameters
+    namespace: gateway-demo
+---
+# WRONG: no controller with this name runs in the cluster, so nobody ever
+# accepts this class.
+# Yellow, "Accepted is Unknown: Pending": it waits for a controller forever.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: kvleva-demo-no-controller
+spec:
+  controllerName: kvleva.example/no-such-controller
+---
+# --- Gateways ----------------------------------------------------------------
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: edge
+  namespace: gateway-demo
+spec:
+  gatewayClassName: kvleva-demo
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      hostname: "*.demo.example"
+---
+# WRONG: the HTTPS listener names a certificate Secret that does not exist.
+# Red, "Programmed is False: AddressNotAssigned" (with no usable listener the
+# gateway gets no proxy). The cause is in the details: the listener's
+# "ResolvedRefs is False: InvalidCertificateRef", and the Secret under missing
+# references.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: tls-missing-certificate
+  namespace: gateway-demo
+spec:
+  gatewayClassName: kvleva-demo
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: "secure.demo.example"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: no-such-certificate
+---
+# WRONG: two listeners want the same port for different protocols.
+# Red, "Accepted is False: ListenersNotValid"; the details show
+# "Conflicted is True: ProtocolConflict" on both listeners.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: conflicting-listeners
+  namespace: gateway-demo
+spec:
+  gatewayClassName: kvleva-demo
+  listeners:
+    - name: web
+      protocol: HTTP
+      port: 8080
+    - name: raw
+      protocol: TCP
+      port: 8080
+---
+# WRONG: its class is the one no controller answers for.
+# Yellow, "Accepted is Unknown: Pending".
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: class-without-controller
+  namespace: gateway-demo
+spec:
+  gatewayClassName: kvleva-demo-no-controller
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+---
+# WRONG: its class does not exist at all.
+# Yellow, "Accepted is Unknown: Pending"; the class is listed under missing
+# references.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: unknown-class
+  namespace: gateway-demo
+spec:
+  gatewayClassName: no-such-class
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+---
+# WRONG: its class was not accepted (the one with the missing parameters).
+# Envoy Gateway runs the gateway all the same, with its default settings: a
+# LoadBalancer Service, which never gets an address in a kind cluster.
+# Red, "Programmed is False: AddressNotAssigned".
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: rejected-class
+  namespace: gateway-demo
+spec:
+  gatewayClassName: kvleva-demo-bad-parameters
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+---
+# --- Routes ------------------------------------------------------------------
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web
+  namespace: gateway-demo
+spec:
+  parentRefs:
+    - name: edge
+  hostnames: ["web.demo.example"]
+  rules:
+    - backendRefs:
+        - name: echo
+          port: 80
+---
+# WRONG: the backend Service does not exist.
+# Red, "ResolvedRefs is False: BackendNotFound"; the Service is listed under
+# missing references.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: missing-backend
+  namespace: gateway-demo
+spec:
+  parentRefs:
+    - name: edge
+  hostnames: ["missing-backend.demo.example"]
+  rules:
+    - backendRefs:
+        - name: no-such-service
+          port: 80
+---
+# WRONG: the Service exists but does not serve this port.
+# Red, "ResolvedRefs is False: PortNotFound".
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: wrong-port
+  namespace: gateway-demo
+spec:
+  parentRefs:
+    - name: edge
+  hostnames: ["wrong-port.demo.example"]
+  rules:
+    - backendRefs:
+        - name: echo
+          port: 8443
+---
+# WRONG: the backend is in another namespace, and no ReferenceGrant there
+# permits this namespace to use it (the one that exists names the wrong
+# namespace; see below).
+# Red, "ResolvedRefs is False: RefNotPermitted".
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: forbidden-backend
+  namespace: gateway-demo
+spec:
+  parentRefs:
+    - name: edge
+  hostnames: ["forbidden-backend.demo.example"]
+  rules:
+    - backendRefs:
+        - name: api
+          namespace: gateway-demo-team-b
+          port: 80
+---
+# WRONG: the backend is of a kind no controller can route to.
+# Red, "ResolvedRefs is False: InvalidKind"; the backend is listed under
+# missing references.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: unsupported-backend
+  namespace: gateway-demo
+spec:
+  parentRefs:
+    - name: edge
+  hostnames: ["unsupported-backend.demo.example"]
+  rules:
+    - backendRefs:
+        - group: storage.kvleva.example
+          kind: Bucket
+          name: assets
+          port: 80
+---
+# WRONG: the gateway only listens for *.demo.example.
+# Red, "Accepted is False: NoMatchingListenerHostname".
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: wrong-hostname
+  namespace: gateway-demo
+spec:
+  parentRefs:
+    - name: edge
+  hostnames: ["shop.elsewhere.example"]
+  rules:
+    - backendRefs:
+        - name: echo
+          port: 80
+---
+# WRONG: the gateway has no listener named "https".
+# Red, "Accepted is False: NoMatchingParent".
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: wrong-listener
+  namespace: gateway-demo
+spec:
+  parentRefs:
+    - name: edge
+      sectionName: https
+  hostnames: ["wrong-listener.demo.example"]
+  rules:
+    - backendRefs:
+        - name: echo
+          port: 80
+---
+# WRONG: the gateway it wants to attach to does not exist.
+# Yellow, "not accepted by any gateway yet" (no controller ever reports on
+# it); the gateway is listed under missing references.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: no-such-gateway
+  namespace: gateway-demo
+spec:
+  parentRefs:
+    - name: missing-gateway
+  hostnames: ["no-such-gateway.demo.example"]
+  rules:
+    - backendRefs:
+        - name: echo
+          port: 80
+---
+# The route itself is fine, but its gateway is the one whose only listener is
+# broken (the missing certificate), so it serves nothing.
+# Green all the same: Envoy Gateway reports the route as accepted, and kvleva
+# shows what the controller reports. The trouble is visible on the gateway.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: on-broken-gateway
+  namespace: gateway-demo
+spec:
+  parentRefs:
+    - name: tls-missing-certificate
+  hostnames: ["secure.demo.example"]
+  rules:
+    - backendRefs:
+        - name: echo
+          port: 80
+---
+# WRONG: the gateway only admits routes from its own namespace.
+# Red, "Accepted is False: NotAllowedByListeners".
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: cross-namespace
+  namespace: gateway-demo-team-b
+spec:
+  parentRefs:
+    - name: edge
+      namespace: gateway-demo
+  hostnames: ["team-b.demo.example"]
+  rules:
+    - backendRefs:
+        - name: api
+          port: 80
+---
+# WRONG: meant to let routes of "gateway-demo" use the Service above, but the
+# namespace is misspelled, so it permits nothing. The API gives a
+# ReferenceGrant no status, so nothing reports this mistake on the grant
+# itself; it shows in the route that stays forbidden.
+# Green: there is nothing to judge it by.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-gateway-demo-routes
+  namespace: gateway-demo-team-b
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: gateway-demmo
+  to:
+    - group: ""
+      kind: Service
+      name: api

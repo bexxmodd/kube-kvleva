@@ -8,13 +8,17 @@
 // api.js and the EventSource stream.
 
 import {createApi} from './api.js';
-import {buildArrows, lift, selectArrows} from './edges.js';
 import {
-  loadFilters, saveFilters, setAllKindsHidden, setConnections, setKindHidden, setQuery, toggleHealth, toQuery,
+  loadFilters, saveFilters, setAllKindsHidden, setKindHidden, setKindsHidden, setQuery, setSystem, toggleHealth,
+  toQuery,
 } from './filters.js';
 import {
-  addPage, allItems, areaScopes, autoOpenScopes, childScope, closeList, createRefreshScheduler, createTree,
-  drawerRefresh, getList, initialScopes, isOpen, nextPageRequest, openList, prune, refreshRequests, remaining,
+  loadDrawerWidth, loadExpandedGroups, loadSidebarHidden, loadSidebarWidth, loadTheme, saveDrawerWidth,
+  saveExpandedGroups, saveSidebarHidden, saveSidebarWidth, saveTheme,
+} from './layout.js';
+import {
+  addPage, areaScopes, autoOpenScopes, childScope, closeList, createRefreshScheduler, createTree,
+  drawerRefresh, getList, initialScopes, isOpen, lift, nextPageRequest, openList, prune, refreshRequests, remaining,
   replaceItems, scopeKey, setError,
 } from './tree.js';
 import {createView} from './view.js';
@@ -31,14 +35,12 @@ const REVEAL_MAX_PAGES = 10;
 /**
  * @param {{
  *   document: !Document,
- *   window: !Window,
  *   fetch: function(string, !Object): !Promise<!Response>,
  *   EventSource: function(new: EventSource, string),
  *   storage: (?Storage|undefined),
  *   setTimeout: function(function(), number): *,
  *   clearTimeout: function(*),
  *   now: function(): number,
- *   requestAnimationFrame: function(function()): *,
  *   clipboard: ({writeText: function(string): !Promise}|undefined),
  * }} env
  * @return {{stop: function()}}
@@ -56,11 +58,8 @@ export function startApp(env) {
     /** @type {?{uid: string, container?: string}} */
     selection: null,
     drawer: {state: 'closed'},
-    /** Id of the widget under the pointer. */
-    hovered: null,
     /** 'open' or 'reconnecting'. */
     stream: 'open',
-    arrowsCapped: false,
   };
 
   /** List key -> promise of the page request in flight for that list. */
@@ -77,15 +76,17 @@ export function startApp(env) {
     onSelect: (selection) => select(selection),
     onReveal: (target) => reveal(target),
     onCloseDrawer: () => closeDrawer(),
-    onHover: (id) => {
-      state.hovered = id;
-      scheduleArrows();
-    },
+    onSidebarWidth: (width) => saveSidebarWidth(env.storage, width),
+    onSidebarHidden: (hidden) => saveSidebarHidden(env.storage, hidden),
+    onDrawerWidth: (width) => saveDrawerWidth(env.storage, width),
+    onGroupsExpanded: (groups) => saveExpandedGroups(env.storage, groups),
+    onTheme: (theme) => saveTheme(env.storage, theme),
+    onSystemToggle: (shown) => applyFilters(setSystem(state.filters, shown)),
     onHealthToggle: (health) => applyFilters(toggleHealth(state.filters, health)),
     onKindHidden: (kindId, hidden) => applyFilters(setKindHidden(state.filters, kindId, hidden)),
+    onKindsHidden: (kindIds, hidden) => applyFilters(setKindsHidden(state.filters, kindIds, hidden)),
     onAllKindsHidden: (hidden) =>
         applyFilters(setAllKindsHidden(state.filters, state.overview?.kinds ?? [], hidden)),
-    onConnections: (mode) => applyFilters(setConnections(state.filters, mode)),
     onSearch: (text) => {
       env.clearTimeout(searchTimer);
       searchTimer = env.setTimeout(() => applyFilters(setQuery(state.filters, text)), SEARCH_DEBOUNCE_MS);
@@ -100,13 +101,23 @@ export function startApp(env) {
     },
   });
 
+  // The layout and the theme do not depend on the cluster, so what the user
+  // chose for them (the theme, the widths of the side panels, whether the
+  // filters panel is shown, and which API groups are expanded in it) is
+  // restored right away.
+  view.setTheme(loadTheme(env.storage));
+  view.setSidebarWidth(loadSidebarWidth(env.storage));
+  view.setSidebarHidden(loadSidebarHidden(env.storage));
+  view.setDrawerWidth(loadDrawerWidth(env.storage));
+  view.setExpandedGroups(loadExpandedGroups(env.storage));
+
   // --- Rendering -------------------------------------------------------------
   // Nothing can be rendered before the first overview has arrived; controls of
   // the static shell that are used earlier only change state.
 
   function renderSidebar() {
     if (state.overview === null) return;
-    view.renderSidebar({overview: state.overview, filters: state.filters, arrowsCapped: state.arrowsCapped});
+    view.renderSidebar({overview: state.overview, filters: state.filters});
   }
 
   function renderHeader() {
@@ -122,60 +133,10 @@ export function startApp(env) {
   function renderCanvas() {
     if (state.overview === null) return;
     view.renderCanvas({overview: state.overview, tree: state.tree, selection: state.selection});
-    arrows = null;
-    scheduleArrows();
   }
 
   function renderDrawer() {
     view.renderDrawer(state.drawer);
-    // The drawer takes room from the canvas, and what it shows decides which
-    // arrows are emphasized.
-    scheduleArrows();
-  }
-
-  // --- Arrows ----------------------------------------------------------------
-
-  /** Arrows for what is rendered; null when the canvas changed since. */
-  let arrows = null;
-  let framePending = false;
-
-  /** Ids whose arrows are emphasized: the hovered and the selected widget. */
-  function focusIds() {
-    const ids = [];
-    if (state.hovered !== null) ids.push(state.hovered);
-    if (state.selection) {
-      // A selection folded away inside a collapsed widget is represented by
-      // its nearest rendered ancestor, like the ends of an arrow.
-      const detail = state.drawer.state === 'ready' ? state.drawer.detail : null;
-      const summary = detail?.summary ?? detail?.pod;
-      ids.push((summary && lift(summary, view.hasElement)) ?? state.selection.uid);
-    }
-    return ids;
-  }
-
-  function drawArrows() {
-    if (stopped || state.overview === null) return;
-    const mode = state.filters.connections;
-    let plan = {arrows: [], capped: false};
-    if (mode !== 'off') {
-      arrows ??= buildArrows(allItems(state.tree), {isRendered: view.hasElement, contains: view.contains});
-      plan = selectArrows(arrows, {mode, focus: focusIds()});
-    }
-    view.drawArrows(plan.arrows);
-    if (plan.capped !== state.arrowsCapped) {
-      state.arrowsCapped = plan.capped;
-      renderSidebar();
-    }
-  }
-
-  /** Redraws the arrows on the next animation frame, at most once per frame. */
-  function scheduleArrows() {
-    if (framePending) return;
-    framePending = true;
-    env.requestAnimationFrame(() => {
-      framePending = false;
-      drawArrows();
-    });
   }
 
   // --- Lists -----------------------------------------------------------------
@@ -294,23 +255,63 @@ export function startApp(env) {
     renderCanvas();
   }
 
+  /**
+   * Brings everything shown up to date after the cluster changed: the
+   * overview and every open list, fetched side by side. Lists whose container
+   * is no longer in the overview are closed.
+   * @return {!Promise<void>}
+   */
+  async function reloadEverything() {
+    const epoch = state.filterEpoch;
+    const [overview, applyLists] =
+        await Promise.all([api.overview(toQuery(state.filters)).catch(() => null), fetchOpenLists()]);
+    // The filters changed while this was on its way: a newer reload owns the
+    // page now.
+    if (epoch !== state.filterEpoch) return;
+    // When the overview could not be fetched the previous one stays.
+    if (overview) state.overview = overview;
+    applyLists();
+    prune(state.tree, state.overview);
+    renderChrome();
+    renderCanvas();
+  }
+
+  /**
+   * Reloads after the system resources switch was flipped. The switch changes
+   * what the cluster consists of, so the overview comes first: lists of
+   * namespaces that are no longer shown are closed instead of refetched.
+   * @return {!Promise<void>}
+   */
+  async function reloadCluster() {
+    const epoch = state.filterEpoch;
+    const overview = await api.overview(toQuery(state.filters)).catch(() => null);
+    if (epoch !== state.filterEpoch) return;
+    // When the overview could not be fetched the previous one stays.
+    if (overview) {
+      state.overview = overview;
+      prune(state.tree, overview);
+      renderChrome();
+    }
+    await reloadLists();
+  }
+
   // --- Filters ---------------------------------------------------------------
 
   function applyFilters(next) {
-    const before = JSON.stringify(toQuery(state.filters));
+    const before = toQuery(state.filters);
     state.filters = next;
     saveFilters(env.storage, next);
     // Before the first load there is nothing to refetch: the load itself will
     // use these filters.
     if (state.overview === null) return Promise.resolve();
     renderChrome();
-    if (JSON.stringify(toQuery(next)) === before) {
-      // Only the connection mode changed: nothing to fetch.
-      scheduleArrows();
-      return Promise.resolve();
-    }
+    const after = toQuery(next);
+    // A change that leaves the query as it was (unchecking the last health
+    // checks all of them again) needs no refetch.
+    if (JSON.stringify(after) === JSON.stringify(before)) return Promise.resolve();
     state.filterEpoch++;
-    return reloadLists();
+    // The other filters only narrow the lists; the overview stays as it is.
+    return after.system === before.system ? reloadLists() : reloadCluster();
   }
 
   // --- Selection and the drawer ----------------------------------------------
@@ -440,13 +441,7 @@ export function startApp(env) {
       default:
     }
 
-    const [overview, applyLists] = await Promise.all([api.overview().catch(() => null), fetchOpenLists()]);
-    // When the overview could not be fetched the previous one stays.
-    if (overview) state.overview = overview;
-    applyLists();
-    prune(state.tree, state.overview);
-    renderChrome();
-    renderCanvas();
+    await reloadEverything();
   }
 
   const scheduler = createRefreshScheduler({
@@ -470,14 +465,12 @@ export function startApp(env) {
     },
   });
 
-  env.window.addEventListener('resize', scheduleArrows);
-
   // --- Loading ---------------------------------------------------------------
 
   async function load() {
     if (stopped) return;
     try {
-      state.overview = await api.overview();
+      state.overview = await api.overview(toQuery(state.filters));
     } catch (err) {
       view.renderError(`Cannot reach the kvleva backend: ${err.message}. Retrying…`);
       env.setTimeout(load, RETRY_MS);
@@ -497,7 +490,6 @@ export function startApp(env) {
       env.clearTimeout(searchTimer);
       scheduler.stop();
       closeStream();
-      env.window.removeEventListener('resize', scheduleArrows);
     },
   };
 }
@@ -520,14 +512,12 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
   const win = window;
   startApp({
     document,
-    window: win,
     fetch: (url, init) => win.fetch(url, init),
     EventSource: win.EventSource,
     storage: storageOf(win),
     setTimeout: (fn, ms) => win.setTimeout(fn, ms),
     clearTimeout: (id) => win.clearTimeout(id),
     now: () => Date.now(),
-    requestAnimationFrame: (fn) => win.requestAnimationFrame(fn),
     clipboard: win.navigator.clipboard,
   });
 }

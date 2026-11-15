@@ -49,9 +49,10 @@ function largeCluster() {
 }
 
 /** Starts the app against a fake backend inside a fresh copy of the shell. */
-function boot({backend = fakeBackend(smallCluster()), storage = memoryStorage(), clipboard} = {}) {
+function boot({backend = fakeBackend(smallCluster()), storage = memoryStorage(), clipboard, windowWidth} = {}) {
   FakeEventSource.instances.length = 0;
   const {document, window} = loadShell();
+  if (windowWidth !== undefined) window.innerWidth = windowWidth;
   const clock = fakeClock();
   const frames = [];
   const app = main.startApp({
@@ -70,10 +71,6 @@ function boot({backend = fakeBackend(smallCluster()), storage = memoryStorage(),
     byDataId: (id) => $$('[data-id]').find((e) => e.dataset.id === id),
     widgetIds: () => $$('.widget').map((w) => w.dataset.id),
     stream: () => FakeEventSource.instances.at(-1),
-    /** Runs the animation frames requested so far. */
-    runFrames: () => {
-      while (frames.length > 0) frames.shift()();
-    },
   };
 }
 
@@ -94,7 +91,9 @@ test('on load the app shows the cluster, its resource types and its areas', asyn
   assert.equal($('#cluster-name').textContent, 'kind-kvleva');
   assert.equal($('#cluster-version').textContent, 'v1.35.0');
   assert.deepEqual($$('#pills .pill-count').map((p) => p.textContent), ['9', '1', '0']);
-  assert.equal($$('#kind-list li').length, 6);
+  assert.deepEqual($$('#kind-list .kind-group-name').map((g) => g.textContent),
+      ['core', 'apps', 'gateway.networking.k8s.io']);
+  assert.equal($$('#kind-list .kind-row').length, 0, 'API groups start collapsed: their types are not listed yet');
   assert.deepEqual($$('#areas > .area').map((a) => a.dataset.id), ['nodes', 'cluster', 'ns:default', 'ns:shop']);
   assert.equal($('#app-error').hidden, true);
 });
@@ -149,7 +148,6 @@ test('saved filters are restored and applied from the first request on', async (
   saved = filters.setKindHidden(saved, 'core/Secret', true);
   saved = filters.toggleHealth(saved, 'green');
   saved = filters.setQuery(saved, 'web');
-  saved = filters.setConnections(saved, 'off');
   const storage = memoryStorage({'kvleva.filters': filters.serialize(saved)});
 
   const {backend, $, $$} = boot({storage});
@@ -162,9 +160,8 @@ test('saved filters are restored and applied from the first request on', async (
     assert.equal(params.q, 'web');
   }
   assert.equal($('#search').value, 'web');
-  assert.equal($$('#kind-list input').find((i) => i.dataset.kindId === 'core/Secret').checked, false);
+  assert.equal(kindBox($$, 'core/Secret').checked, false);
   assert.equal($('#health-filter input[data-health="green"]').checked, false);
-  assert.equal($('#connections-filter input[value="off"]').checked, true);
 });
 
 test('when the backend is unreachable the app says so and recovers on its own', async () => {
@@ -319,7 +316,15 @@ test('Expand all opens every area and nothing nested; Collapse all closes everyt
 // --- Filters -----------------------------------------------------------------
 
 const OPEN_ON_LOAD = ['namespace=default', 'namespace=shop', 'nodes=true', 'parent=dep-1', 'parent=rs-1'];
-const kindBox = ($$, kindId) => $$('#kind-list input').find((i) => i.dataset.kindId === kindId);
+const groupToggle = ($$, group) => $$('#kind-list button').find((b) => b.dataset.groupToggle === group);
+const listedKinds = ($$) => $$('#kind-list .kind-name').map((k) => k.textContent);
+
+/** The checkbox of a resource type. API groups start collapsed, so the group of the type is expanded first. */
+function kindBox($$, kindId) {
+  const find = () => $$('#kind-list input').find((i) => i.dataset.kindId === kindId);
+  if (!find()) groupToggle($$, kindId.split('/')[0]).click();
+  return find();
+}
 
 test('hiding a resource type refetches every open list with hideKinds and saves the filter', async () => {
   const {backend, storage, $$} = boot();
@@ -336,6 +341,23 @@ test('hiding a resource type refetches every open list with hideKinds and saves 
   }
   assert.deepEqual(filters.loadFilters(storage).hiddenKinds, ['core/Secret']);
   assert.equal(kindBox($$, 'core/Secret').checked, false);
+});
+
+test('hiding a whole API group refetches every open list once, without any of its types', async () => {
+  const {backend, storage, $$} = boot();
+  await flush();
+  backend.forget();
+
+  $$('#kind-list input').find((i) => i.dataset.group === 'core').click();
+  await flush();
+
+  assert.deepEqual(scopes(backend).sort(), OPEN_ON_LOAD, 'one reload, not one per type');
+  for (const params of backend.listRequests()) {
+    assert.equal(params.hideKinds, 'core/Pod,core/Secret,core/Service');
+  }
+  assert.deepEqual(filters.loadFilters(storage).hiddenKinds, ['core/Pod', 'core/Secret', 'core/Service']);
+  for (const kindId of ['core/Pod', 'core/Secret', 'core/Service']) assert.equal(kindBox($$, kindId).checked, false);
+  assert.equal(kindBox($$, 'apps/Deployment').checked, true);
 });
 
 test('after a filter change the canvas shows what the backend returns for it', async () => {
@@ -409,18 +431,6 @@ test('searching reloads once, 250 ms after the last keystroke', async () => {
   assert.deepEqual(scopes(backend).sort(), OPEN_ON_LOAD);
   for (const params of backend.listRequests()) assert.equal(params.q, 'CHECK');
   assert.equal(filters.loadFilters(storage).q, 'CHECK');
-});
-
-test('changing the connection mode refetches nothing and is saved', async () => {
-  const {backend, storage, $} = boot();
-  await flush();
-  backend.forget();
-
-  $('#connections-filter input[value="selected"]').click();
-  await flush();
-
-  assert.deepEqual(backend.urls(), []);
-  assert.equal(filters.loadFilters(storage).connections, 'selected');
 });
 
 test('a newer filter wins over responses for an older one that arrive late', async () => {
@@ -1035,177 +1045,317 @@ test('a failed refresh keeps what is shown and the next change tries again', asy
   assert.equal($$('.list .note.error').length, 0);
 });
 
-// --- Arrows ------------------------------------------------------------------
+// --- System resources switch ---------------------------------------------------
 
-const arrowPairs = ($$) => $$('#arrow-paths > path').map((p) => `${p.dataset.from} -> ${p.dataset.to}`).sort();
-const emphasizedPairs = ($$) =>
-    $$('#arrow-paths > path.emphasized').map((p) => `${p.dataset.from} -> ${p.dataset.to}`).sort();
+/**
+ * A backend whose answers depend on the switch: with system resources on, the
+ * overview also lists the kube-system namespace.
+ */
+function clusterWithSystemNamespace() {
+  const data = smallCluster();
+  const user = fx.overview({health: fx.rollup(9, 1, 0), systemResources: 80});
+  const everything = {
+    ...user,
+    health: fx.rollup(89, 1, 0),
+    // Sorted by name, as the backend sends them.
+    namespaces: [
+      user.namespaces[0],
+      {name: 'kube-system', uid: 'ns-kube-system-uid', health: 'green', reason: 'Active', count: 80,
+       rollup: fx.rollup(80, 0, 0)},
+      user.namespaces[1],
+    ],
+  };
+  data.overview = (params) => (params.system === 'true' ? everything : user);
+  data.lists['namespace=kube-system'] = [fx.summary({uid: 'dns-1', name: 'coredns', namespace: 'kube-system',
+                                                     path: ['ns:kube-system']})];
+  return data;
+}
 
-test('references between rendered resources are drawn as arrows on the next animation frame', async () => {
-  const {runFrames, $$} = boot();
+const areaIds = ($$) => $$('#areas > .area').map((a) => a.dataset.id);
+
+test('system resources are off by default: nothing asks the backend for them', async () => {
+  const {backend, $, $$} = boot({backend: fakeBackend(clusterWithSystemNamespace())});
   await flush();
-  assert.deepEqual(arrowPairs($$), [], 'nothing is drawn before the frame');
 
-  runFrames();
-
-  assert.deepEqual(arrowPairs($$), [
-    'gw-1 -> cluster',
-    'pod-1 -> cm-1',
-    'pod-1 -> node-1',
-    'route-1 -> gw-1',
-    'route-1 -> svc-1',
-    'svc-1 -> pod-1',
-  ]);
-  assert.deepEqual(emphasizedPairs($$), []);
+  assert.equal($('#system-toggle').checked, false);
+  assert.equal($('#system-count').textContent, '80 hidden');
+  assert.ok(backend.urls().includes('/api/overview'), 'the overview is requested without the system parameter');
+  for (const params of backend.listRequests()) assert.equal('system' in params, false);
+  assert.deepEqual(areaIds($$), ['nodes', 'cluster', 'ns:default', 'ns:shop']);
 });
 
-test('arrows are redrawn once per animation frame however often the canvas renders', async () => {
-  const {frames, runFrames, byDataId} = boot();
+test('switching system resources on refetches the overview and every open list with them, and is saved', async () => {
+  const {backend, storage, $, $$} = boot({backend: fakeBackend(clusterWithSystemNamespace())});
   await flush();
-  assert.equal(frames.length, 1, 'many renders during loading, one frame requested');
+  backend.forget();
 
-  runFrames();
-  byDataId('cluster').querySelector('.area-head .toggle').click();
+  $('#system-toggle').click();
   await flush();
-  assert.equal(frames.length, 1);
+
+  assert.equal(backend.urls().filter((u) => u.startsWith('/api/overview')).join(), '/api/overview?system=true');
+  assert.deepEqual(scopes(backend).sort(), OPEN_ON_LOAD);
+  for (const params of backend.listRequests()) assert.equal(params.system, 'true');
+  assert.deepEqual(areaIds($$), ['nodes', 'cluster', 'ns:default', 'ns:kube-system', 'ns:shop'],
+      'the system namespace appears');
+  assert.deepEqual($$('#pills .pill-count').map((p) => p.textContent), ['89', '1', '0'], 'totals include them');
+  assert.equal($('#system-toggle').checked, true);
+  assert.equal($('#system-count').textContent, '80 shown');
+  assert.equal(filters.loadFilters(storage).system, true);
 });
 
-test('an arrow to a folded resource ends at its nearest rendered container', async () => {
-  const {runFrames, $$, byDataId} = boot();
+test('switching system resources off again removes the system namespaces and what was open in them', async () => {
+  const {backend, $, $$, byDataId, widgetIds} = boot({backend: fakeBackend(clusterWithSystemNamespace())});
+  await flush();
+  $('#system-toggle').click();
+  await flush();
+  byDataId('ns:kube-system').querySelector('.area-head .toggle').click();
+  await flush();
+  assert.ok(widgetIds().includes('dns-1'));
+  backend.forget();
+
+  $('#system-toggle').click();
   await flush();
 
-  byDataId('dep-1').querySelector('.toggle').click();
-  runFrames();
-
-  assert.deepEqual(arrowPairs($$), ['gw-1 -> cluster', 'route-1 -> gw-1', 'route-1 -> svc-1', 'svc-1 -> dep-1']);
+  assert.deepEqual(areaIds($$), ['nodes', 'cluster', 'ns:default', 'ns:shop']);
+  assert.equal(widgetIds().includes('dns-1'), false);
+  assert.equal(scopes(backend).includes('namespace=kube-system'), false, 'the hidden namespace is not refetched');
+  assert.equal(backend.urls().filter((u) => u.startsWith('/api/overview')).join(), '/api/overview');
 });
 
-test('opening the target area moves the arrow from the area box to the widget', async () => {
-  const {runFrames, $$, byDataId} = boot();
+test('a saved "system resources on" is restored and used from the first request', async () => {
+  const saved = filters.setSystem(filters.defaultFilters(), true);
+  const storage = memoryStorage({'kvleva.filters': filters.serialize(saved)});
+
+  const {backend, $, $$} = boot({backend: fakeBackend(clusterWithSystemNamespace()), storage});
   await flush();
 
-  byDataId('cluster').querySelector('.area-head .toggle').click();
-  await flush();
-  runFrames();
-
-  assert.ok(arrowPairs($$).includes('gw-1 -> gc-1'));
-  assert.equal(arrowPairs($$).includes('gw-1 -> cluster'), false);
+  assert.equal(backend.urls()[0], '/api/overview?system=true');
+  for (const params of backend.listRequests()) assert.equal(params.system, 'true');
+  assert.equal($('#system-toggle').checked, true);
+  assert.ok(areaIds($$).includes('ns:kube-system'));
 });
 
-test('in mode all, the arrows of the hovered and of the selected widget are emphasized', async () => {
-  const {runFrames, $$, byDataId} = boot();
+test('live refreshes keep asking for system resources while the switch is on', async () => {
+  const {backend, clock, stream, $} = boot({backend: fakeBackend(clusterWithSystemNamespace())});
   await flush();
-  runFrames();
-
-  fire(byDataId('gw-1'), 'mouseover');
-  runFrames();
-  assert.equal(arrowPairs($$).length, 6, 'every arrow is still drawn');
-  assert.deepEqual(emphasizedPairs($$), ['gw-1 -> cluster', 'route-1 -> gw-1']);
-
-  byDataId('cm-1').click();
+  $('#system-toggle').click();
   await flush();
-  runFrames();
-  assert.deepEqual(emphasizedPairs($$), ['gw-1 -> cluster', 'pod-1 -> cm-1', 'route-1 -> gw-1']);
+  backend.forget();
 
-  fire(byDataId('ns:default').querySelector('.lane-label'), 'mouseover');
-  runFrames();
-  assert.deepEqual(emphasizedPairs($$), ['pod-1 -> cm-1']);
+  stream().change(fx.change({revision: 1043, changed: ['pod-1']}));
+  clock.advance(500);
+  await flush();
+
+  assert.equal(backend.urls().filter((u) => u.startsWith('/api/overview')).join(), '/api/overview?system=true');
+  for (const params of backend.listRequests()) assert.equal(params.system, 'true');
 });
 
-test('mode off draws no arrows and mode selected only those of the hovered or selected widget', async () => {
-  const {runFrames, $, $$, byDataId} = boot();
+// --- Filters panel width -------------------------------------------------------
+
+test('the filters panel starts at its default width when none was chosen', async () => {
+  const {$} = boot();
   await flush();
-  runFrames();
 
-  $('#connections-filter input[value="off"]').click();
-  runFrames();
-  assert.deepEqual(arrowPairs($$), []);
+  assert.equal($('#sidebar').style.width, '');
+});
 
-  $('#connections-filter input[value="selected"]').click();
-  runFrames();
-  assert.deepEqual(arrowPairs($$), [], 'nothing is hovered or selected');
+test('a chosen filters panel width is saved and restored the next time the page opens', async () => {
+  const storage = memoryStorage();
+  const first = boot({storage});
+  await flush();
+
+  fire(first.$('#sidebar-resizer'), 'mousedown', {clientX: 260, button: 0});
+  fire(first.document.body, 'mousemove', {clientX: 318});
+  fire(first.document.body, 'mouseup', {clientX: 318});
+  assert.equal(first.$('#sidebar').style.width, '318px');
+  first.app.stop();
+
+  const second = boot({storage});
+  await flush();
+  assert.equal(second.$('#sidebar').style.width, '318px');
+});
+
+test('resizing the filters panel requests nothing from the backend', async () => {
+  const {backend, document, $} = boot();
+  await flush();
+  backend.forget();
+
+  fire($('#sidebar-resizer'), 'mousedown', {clientX: 260, button: 0});
+  fire(document.body, 'mousemove', {clientX: 300});
+  fire(document.body, 'mouseup', {clientX: 300});
+  await flush();
+
+  assert.deepEqual(backend.urls(), []);
+});
+
+test('hiding the filters panel is remembered the next time the page opens', async () => {
+  const storage = memoryStorage();
+  const first = boot({storage});
+  await flush();
+  assert.equal(first.$('#sidebar').hidden, false);
+
+  first.$('#sidebar-toggle').click();
+  assert.equal(first.$('#sidebar').hidden, true);
+  first.app.stop();
+
+  const second = boot({storage});
+  await flush();
+  assert.equal(second.$('#sidebar').hidden, true);
+  assert.equal(second.$('#sidebar-toggle').getAttribute('aria-expanded'), 'false');
+
+  second.$('#sidebar-toggle').click();
+  second.app.stop();
+  const third = boot({storage});
+  await flush();
+  assert.equal(third.$('#sidebar').hidden, false, 'and so is showing it again');
+});
+
+test('filters keep applying while the filters panel is hidden, and hiding requests nothing', async () => {
+  const {backend, clock, stream, $, $$} = boot();
+  await flush();
+  kindBox($$, 'core/Secret').click();
+  await flush();
+  backend.forget();
+
+  $('#sidebar-toggle').click();
+  await flush();
+  assert.deepEqual(backend.urls(), [], 'hiding the panel is not a filter change');
+
+  stream().change(fx.change({revision: 1043, changed: ['pod-1']}));
+  clock.advance(500);
+  await flush();
+  assert.ok(backend.listRequests().length > 0);
+  for (const params of backend.listRequests()) assert.equal(params.hideKinds, 'core/Secret');
+});
+
+test('expanding an API group requests nothing and filters nothing', async () => {
+  const {backend, storage, clock, stream, widgetIds, $$} = boot();
+  await flush();
+  backend.forget();
+  const shown = widgetIds();
+  assert.deepEqual(listedKinds($$), [], 'every group starts collapsed');
+
+  groupToggle($$, 'apps').click();
+  await flush();
+
+  assert.deepEqual(listedKinds($$), ['Deployment', 'ReplicaSet']);
+  assert.deepEqual(backend.urls(), [], 'expanding is not a filter change');
+  assert.deepEqual(widgetIds(), shown, 'the cluster picture is the same, collapsed or expanded');
+  assert.equal(storage.data.has('kvleva.filters'), false);
+
+  stream().change(fx.change({revision: 1043, changed: ['pod-1']}));
+  clock.advance(500);
+  await flush();
+  assert.ok(backend.listRequests().length > 0);
+  for (const params of backend.listRequests()) assert.equal(params.hideKinds, undefined);
+  assert.deepEqual(listedKinds($$), ['Deployment', 'ReplicaSet'], 'a live refresh keeps it expanded');
+});
+
+test('expanded API groups are remembered the next time the page opens', async () => {
+  const storage = memoryStorage();
+  const first = boot({storage});
+  await flush();
+
+  groupToggle(first.$$, 'apps').click();
+  first.app.stop();
+
+  const second = boot({storage});
+  await flush();
+  assert.deepEqual(listedKinds(second.$$), ['Deployment', 'ReplicaSet'], 'the other groups are still collapsed');
+  assert.equal(groupToggle(second.$$, 'apps').getAttribute('aria-expanded'), 'true');
+
+  groupToggle(second.$$, 'apps').click();
+  second.app.stop();
+  const third = boot({storage});
+  await flush();
+  assert.deepEqual(listedKinds(third.$$), [], 'and so is collapsing it again');
+});
+
+test('a chosen details panel width is saved and restored the next time the page opens', async () => {
+  const storage = memoryStorage();
+  const first = boot({storage, windowWidth: 1500});
+  await flush();
+  first.byDataId('cm-1').click();
+  await flush();
+
+  fire(first.$('#drawer-resizer'), 'mousedown', {clientX: 1020, button: 0});
+  fire(first.document.body, 'mousemove', {clientX: 1090});
+  fire(first.document.body, 'mouseup', {clientX: 1090});
+  assert.equal(first.$('#drawer').style.width, '410px');
+  first.app.stop();
+
+  const second = boot({storage, windowWidth: 1500});
+  await flush();
+  second.byDataId('cm-1').click();
+  await flush();
+  assert.equal(second.$('#drawer').style.width, '410px');
+  assert.equal(second.$('#sidebar').style.width, '', 'the filters panel keeps its own width');
+});
+
+// --- Theme ---------------------------------------------------------------------
+
+test('the app starts in the night theme', async () => {
+  const {document, $} = boot();
+  await flush();
+
+  assert.equal(document.documentElement.dataset.theme, 'night');
+  assert.match($('#theme-toggle').textContent, /day/i);
+});
+
+test('a remembered day theme is shown at once, even while the backend cannot be reached', async () => {
+  const backend = fakeBackend(smallCluster());
+  backend.failWith = 503;
+
+  const {document, $} = boot({backend, storage: memoryStorage({'kvleva.theme': 'day'})});
+
+  assert.equal(document.documentElement.dataset.theme, 'day', 'before the first answer of the backend');
+  assert.match($('#theme-toggle').textContent, /night/i);
+  await flush();
+  assert.equal(document.documentElement.dataset.theme, 'day');
+});
+
+test('switching the theme is remembered, requests nothing and leaves the cluster picture as it is', async () => {
+  const storage = memoryStorage();
+  const first = boot({storage});
+  await flush();
+  first.backend.forget();
+  const shown = first.widgetIds();
+
+  first.$('#theme-toggle').click();
+  await flush();
+
+  assert.equal(first.document.documentElement.dataset.theme, 'day');
+  assert.deepEqual(first.backend.urls(), [], 'the theme is not a filter');
+  assert.deepEqual(first.widgetIds(), shown);
+  assert.equal(storage.data.has('kvleva.filters'), false);
+  first.app.stop();
+
+  const second = boot({storage});
+  await flush();
+  assert.equal(second.document.documentElement.dataset.theme, 'day');
+
+  second.$('#theme-toggle').click();
+  second.app.stop();
+  const third = boot({storage});
+  await flush();
+  assert.equal(third.document.documentElement.dataset.theme, 'night', 'and so is switching back');
+});
+
+// --- No arrows -----------------------------------------------------------------
+
+test('references are not drawn on the canvas, whatever the user does', async () => {
+  const {frames, window, $$, byDataId} = boot();
+  await flush();
 
   fire(byDataId('svc-1'), 'mouseover');
-  runFrames();
-  assert.deepEqual(arrowPairs($$), ['route-1 -> svc-1', 'svc-1 -> pod-1']);
-  assert.deepEqual(emphasizedPairs($$), ['route-1 -> svc-1', 'svc-1 -> pod-1']);
-
+  fire(window, 'resize');
   byDataId('cm-1').click();
   await flush();
-  runFrames();
-  assert.deepEqual(arrowPairs($$), ['pod-1 -> cm-1', 'route-1 -> svc-1', 'svc-1 -> pod-1']);
-});
-
-test('a selection folded away emphasizes the arrows of its nearest rendered ancestor', async () => {
-  const {runFrames, $$, byDataId} = boot();
-  await flush();
-  byDataId('pod-1').querySelector('.widget-head .name').click();
-  await flush();
-
   byDataId('dep-1').querySelector('.toggle').click();
-  runFrames();
-
-  assert.deepEqual(emphasizedPairs($$), ['svc-1 -> dep-1']);
-});
-
-test('more than 300 arrows fall back to selected only, and the sidebar says so', async () => {
-  const data = smallCluster();
-  const targets = ['t-0', 't-1', 't-2', 't-3'].map((uid) => fx.summary({uid, name: uid}));
-  const sources = Array.from({length: 76}, (_, i) => fx.summary({
-    uid: `src-${i}`, name: `src-${i}`, kindId: 'core/Service', kind: 'Service',
-    refs: targets.map((t) => fx.ref({uid: t.uid, name: t.name})),
-  }));
-  data.lists['namespace=default'] = [...sources, ...targets];
-  const {runFrames, $, $$, byDataId} = boot({backend: fakeBackend(data)});
   await flush();
-  runFrames();
 
-  assert.equal($('#connections-note').hidden, false);
-  assert.match($('#connections-note').textContent, /more than 300/i);
-  assert.deepEqual(arrowPairs($$), [], '304 arrows are not drawn at once');
-
-  fire(byDataId('src-7'), 'mouseover');
-  runFrames();
-  assert.deepEqual(arrowPairs($$), ['src-7 -> t-0', 'src-7 -> t-1', 'src-7 -> t-2', 'src-7 -> t-3']);
-
-  byDataId('ns:default').querySelector('.area-head .toggle').click();
-  runFrames();
-  assert.equal($('#connections-note').hidden, true, 'the note goes away with the arrows');
-});
-
-test('exactly 300 arrows are still all drawn', async () => {
-  const data = smallCluster();
-  const targets = ['t-0', 't-1', 't-2', 't-3'].map((uid) => fx.summary({uid, name: uid}));
-  const sources = Array.from({length: 75}, (_, i) => fx.summary({
-    uid: `src-${i}`, name: `src-${i}`, kindId: 'core/Service', kind: 'Service',
-    refs: targets.map((t) => fx.ref({uid: t.uid, name: t.name})),
-  }));
-  data.lists['namespace=default'] = [...sources, ...targets];
-  const {runFrames, $, $$} = boot({backend: fakeBackend(data)});
-  await flush();
-  runFrames();
-
-  assert.equal($$('#arrow-paths > path').length, 300);
-  assert.equal($('#connections-note').hidden, true);
-});
-
-test('arrows are redrawn when the window is resized and when the drawer opens or closes', async () => {
-  const {frames, runFrames, window, $, byDataId} = boot();
-  await flush();
-  runFrames();
-
-  fire(window, 'resize');
-  fire(window, 'resize');
-  assert.equal(frames.length, 1, 'throttled to one frame');
-  runFrames();
-
-  byDataId('cm-1').click();
-  assert.equal(frames.length, 1, 'the drawer takes room from the canvas');
-  await flush();
-  runFrames();
-
-  $('#drawer-close').click();
-  assert.equal(frames.length, 1);
+  assert.equal($$('svg, path').length, 0, 'references are listed in the details, not drawn');
+  assert.equal(frames.length, 0, 'with nothing to draw, no animation frame is ever requested');
 });
 
 // --- Read-only ---------------------------------------------------------------
@@ -1285,7 +1435,6 @@ test('filters changed before the cluster has loaded are kept and applied to the 
 
   $('#health-filter input[data-health="red"]').click();
   $('#kinds-none').click();
-  $('#connections-filter input[value="off"]').click();
   type($('#search'), 'web');
   clock.advance(250);
   await flush();
@@ -1303,13 +1452,12 @@ test('filters changed before the cluster has loaded are kept and applied to the 
     assert.equal('hideKinds' in params, false, 'None had no resource types to hide yet');
   }
   assert.equal($('#health-filter input[data-health="red"]').checked, false);
-  assert.equal($('#connections-filter input[value="off"]').checked, true);
 });
 
 test('canvas and drawer controls are harmless before the cluster has loaded', async () => {
   const backend = fakeBackend(smallCluster());
   backend.failWith = 503;
-  const {clock, document, stream, window, $, widgetIds, runFrames} = boot({backend});
+  const {clock, document, stream, window, $, widgetIds} = boot({backend});
   await flush();
   backend.forget();
 
@@ -1321,7 +1469,6 @@ test('canvas and drawer controls are harmless before the cluster has loaded', as
   stream().emit('error');
   stream().emit('open');
   stream().change(fx.change({overflow: true}));
-  runFrames();
   await flush();
 
   assert.deepEqual(backend.urls(), [], 'nothing is requested for a cluster that is not known yet');

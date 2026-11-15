@@ -26,8 +26,8 @@ func (s *Store) Detail(uid string) (Detail, bool) {
 		Owners:     make([]Link, 0),
 		Missing:    make([]MissingRef, 0),
 		Incoming:   s.incoming(o),
+		Outgoing:   s.links(o, maxDetailLinks),
 	}
-	detail.Outgoing, _ = s.links(o, maxDetailLinks)
 
 	obj, err := o.decode()
 	if err != nil {

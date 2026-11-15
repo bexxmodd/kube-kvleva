@@ -124,10 +124,6 @@ type Summary struct {
 	Path       []string    `json:"path"`
 	Node       string      `json:"node,omitempty"`
 	Containers []Container `json:"containers,omitempty"`
-	// Refs are the outgoing references whose target exists, capped at
-	// maxSummaryRefs.
-	Refs          []Link `json:"refs"`
-	RefsTruncated bool   `json:"refsTruncated"`
 }
 
 // Condition is a status condition of a resource.
@@ -204,6 +200,9 @@ type Query struct {
 	// Text keeps only resources whose name contains it, ignoring case. The
 	// tree scopes treat it like Health.
 	Text string
+	// HideSystem leaves out system resources (see Overview.SystemResources).
+	// In the tree scopes it works like HideKinds.
+	HideSystem bool
 	// Limit is the page size; 0 means DefaultLimit and it is capped at
 	// MaxLimit.
 	Limit  int
@@ -220,15 +219,26 @@ type Page struct {
 	Revision uint64 `json:"revision"`
 }
 
+// OverviewOptions selects what an Overview covers.
+type OverviewOptions struct {
+	// HideSystem leaves system resources out of every count and leaves the
+	// system namespaces out of the namespace list.
+	HideSystem bool
+}
+
 // Overview summarizes the whole cluster.
 type Overview struct {
-	Revision      uint64             `json:"revision"`
-	Sync          Sync               `json:"sync"`
-	Health        Rollup             `json:"health"`
-	Kinds         []KindSummary      `json:"kinds"`
-	Namespaces    []NamespaceSummary `json:"namespaces"`
-	ClusterScoped Area               `json:"clusterScoped"`
-	Nodes         Area               `json:"nodes"`
+	Revision uint64 `json:"revision"`
+	Sync     Sync   `json:"sync"`
+	Health   Rollup `json:"health"`
+	// SystemResources is the number of system resources in the cluster:
+	// what the cluster brought along rather than what its users deployed.
+	// It is reported whether or not they are part of the other counts.
+	SystemResources int                `json:"systemResources"`
+	Kinds           []KindSummary      `json:"kinds"`
+	Namespaces      []NamespaceSummary `json:"namespaces"`
+	ClusterScoped   Area               `json:"clusterScoped"`
+	Nodes           Area               `json:"nodes"`
 }
 
 // Sync reports how far loading the cluster has progressed.

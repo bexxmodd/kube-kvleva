@@ -152,17 +152,6 @@ test('the flat pod list of a node offers no further nesting', () => {
   assert.equal(tree.childScope(podWithChildren, {type: 'node', name: 'n1'}), null);
 });
 
-test('every loaded summary of every open list can be enumerated', () => {
-  const t = tree.createTree();
-  tree.openList(t, NS);
-  tree.openList(t, {type: 'parent', uid: 'dep-1'}, 'ns:default');
-  tree.openList(t, {type: 'nodes'});
-  tree.addPage(t, 'ns:default', fx.page([fx.service(), fx.deployment()]));
-  tree.addPage(t, 'parent:dep-1', fx.page([fx.replicaSet()]));
-
-  assert.deepEqual(uids([...tree.allItems(t)]).sort(), ['dep-1', 'rs-1', 'svc-1']);
-});
-
 // --- Initial expansion -------------------------------------------------------
 
 test('a small cluster starts with the Nodes area and every namespace open', () => {
@@ -426,4 +415,49 @@ test('a stopped scheduler runs nothing', async () => {
 
   assert.equal(runs.length, 0);
   assert.equal(clock.pending(), 0);
+});
+
+// --- Nearest rendered ancestor -----------------------------------------------
+// Revealing a resource that is folded away, or hidden by the filters, falls
+// back to the innermost box around it that is on the page.
+
+const renderedIds = (...ids) => (id) => ids.includes(id);
+
+test('a rendered resource stands for itself', () => {
+  assert.equal(tree.lift(fx.pod(), renderedIds('pod-1', 'rs-1', 'dep-1', 'ns:default')), 'pod-1');
+});
+
+test('a folded resource is represented by its innermost rendered owner', () => {
+  assert.equal(tree.lift(fx.pod(), renderedIds('rs-1', 'dep-1', 'ns:default')), 'rs-1');
+  assert.equal(tree.lift(fx.pod(), renderedIds('dep-1', 'ns:default')), 'dep-1');
+});
+
+test('a resource in a closed namespace is represented by the namespace box', () => {
+  assert.equal(tree.lift(fx.pod(), renderedIds('ns:default', 'ns:shop', 'cluster', 'nodes')), 'ns:default');
+});
+
+test('an unrendered cluster-scoped resource is represented by the cluster-wide area', () => {
+  const gatewayClass = fx.link({uid: 'gc-1', kindId: 'gateway.networking.k8s.io/GatewayClass', namespace: '',
+                                name: 'kvleva', path: ['cluster']});
+
+  assert.equal(tree.lift(gatewayClass, renderedIds('cluster', 'nodes', 'ns:default')), 'cluster');
+});
+
+test('an unrendered Node is represented by the Nodes area, not the cluster-wide area', () => {
+  assert.equal(tree.lift(fx.node(), renderedIds('cluster', 'nodes', 'ns:default')), 'nodes');
+  assert.equal(tree.lift(fx.node(), renderedIds('node-1', 'cluster', 'nodes')), 'node-1', 'its widget is preferred');
+});
+
+test('a Namespace object is represented by its namespace box', () => {
+  const shop = fx.link({uid: fx.UID.nsShop, kindId: 'core/Namespace', namespace: '', name: 'shop', path: ['cluster']});
+
+  assert.equal(tree.lift(shop, renderedIds('ns:default', 'ns:shop', 'cluster')), 'ns:shop');
+});
+
+test('a resource with nothing rendered around it has no representative', () => {
+  const far = fx.link({uid: 'far', namespace: 'gone', path: ['ns:gone', 'far-owner']});
+
+  assert.equal(tree.lift(far, renderedIds('ns:default', 'cluster', 'nodes')), null);
+  assert.equal(tree.lift({uid: 'bare', kindId: 'core/ConfigMap', name: 'bare'}, renderedIds('ns:default')), null,
+      'a missing path is tolerated');
 });

@@ -9,25 +9,25 @@ const STORAGE_KEY = 'kvleva.filters';
 /** Health values in the order they are sent to the backend. */
 const HEALTHS = ['red', 'yellow', 'green'];
 
-/** How reference arrows are drawn. */
-export const CONNECTION_MODES = ['all', 'selected', 'off'];
-
 /**
  * @typedef {{
  *   health: {green: boolean, yellow: boolean, red: boolean},
  *   hiddenKinds: !Array<string>,
  *   q: string,
- *   connections: string,
+ *   system: boolean,
  * }} Filters
  */
 
-/** @return {!Filters} Filters that show everything. */
+/**
+ * @return {!Filters} Filters that show everything a user deployed. System
+ *     resources (what the cluster brought along) start hidden.
+ */
 export function defaultFilters() {
   return {
     health: {green: true, yellow: true, red: true},
     hiddenKinds: [],
     q: '',
-    connections: 'all',
+    system: false,
   };
 }
 
@@ -35,7 +35,7 @@ export function defaultFilters() {
  * Maps filters to the query parameters of a resource list request. Parameters
  * that would not filter anything are omitted.
  * @param {!Filters} filters
- * @return {{hideKinds?: string, health?: string, q?: string}}
+ * @return {{hideKinds?: string, health?: string, q?: string, system?: string}}
  */
 export function toQuery(filters) {
   const query = {};
@@ -44,7 +44,19 @@ export function toQuery(filters) {
   if (shown.length < HEALTHS.length) query.health = shown.join(',');
   const q = filters.q.trim();
   if (q) query.q = q;
+  // The backend leaves system resources out unless asked for them.
+  if (filters.system) query.system = 'true';
   return query;
+}
+
+/**
+ * Switches system resources on or off.
+ * @param {!Filters} filters
+ * @param {boolean} shown
+ * @return {!Filters}
+ */
+export function setSystem(filters, shown) {
+  return {...filters, system: shown === true};
 }
 
 /**
@@ -108,15 +120,6 @@ export function setQuery(filters, q) {
 
 /**
  * @param {!Filters} filters
- * @param {string} mode One of CONNECTION_MODES; anything else is ignored.
- * @return {!Filters}
- */
-export function setConnections(filters, mode) {
-  return CONNECTION_MODES.includes(mode) ? {...filters, connections: mode} : filters;
-}
-
-/**
- * @param {!Filters} filters
  * @return {string}
  */
 export function serialize(filters) {
@@ -150,7 +153,7 @@ export function deserialize(text) {
     result.hiddenKinds = [...new Set(kinds)].sort();
   }
   if (typeof raw.q === 'string') result.q = raw.q.trim();
-  if (CONNECTION_MODES.includes(raw.connections)) result.connections = raw.connections;
+  result.system = raw.system === true;
   return result;
 }
 
@@ -189,4 +192,60 @@ export function matchKinds(kinds, text) {
   if (!needle) return kinds;
   return kinds.filter((k) =>
       k.kind.toLowerCase().includes(needle) || k.group.toLowerCase().includes(needle));
+}
+
+/** The core API group, as the backend spells it. It is listed first. */
+const CORE_GROUP = 'core';
+
+/**
+ * Groups resource types by their API group for the sidebar: the core group
+ * first, the others alphabetically. Inside a group the types keep the order
+ * they have in the overview.
+ * @param {!Array<{kindId: string, group: string, count: number}>} kinds
+ * @return {!Array<{group: string, kinds: !Array<!Object>, count: number}>}
+ *     `count` is the number of resources of all types of the group.
+ */
+export function groupKinds(kinds) {
+  const byGroup = new Map();
+  for (const kind of kinds) {
+    if (!byGroup.has(kind.group)) byGroup.set(kind.group, {group: kind.group, kinds: [], count: 0});
+    const entry = byGroup.get(kind.group);
+    entry.kinds.push(kind);
+    entry.count += kind.count;
+  }
+  return [...byGroup.values()].sort((a, b) => {
+    if ((a.group === CORE_GROUP) !== (b.group === CORE_GROUP)) return a.group === CORE_GROUP ? -1 : 1;
+    return a.group < b.group ? -1 : a.group > b.group ? 1 : 0;
+  });
+}
+
+/**
+ * Hides or shows several kinds at once (the checkbox of an API group).
+ * @param {!Filters} filters
+ * @param {!Array<string>} kindIds
+ * @param {boolean} hidden
+ * @return {!Filters}
+ */
+export function setKindsHidden(filters, kindIds, hidden) {
+  const kinds = new Set(filters.hiddenKinds);
+  for (const kindId of kindIds) {
+    if (hidden) {
+      kinds.add(kindId);
+    } else {
+      kinds.delete(kindId);
+    }
+  }
+  return {...filters, hiddenKinds: [...kinds].sort()};
+}
+
+/**
+ * @param {!Filters} filters
+ * @param {!Array<{kindId: string}>} kinds The kinds of one group.
+ * @return {string} 'shown' when none of them is hidden, 'hidden' when all
+ *     are, 'partly' otherwise.
+ */
+export function groupState(filters, kinds) {
+  const hidden = kinds.filter((kind) => isKindHidden(filters, kind.kindId)).length;
+  if (hidden === 0) return 'shown';
+  return hidden === kinds.length ? 'hidden' : 'partly';
 }

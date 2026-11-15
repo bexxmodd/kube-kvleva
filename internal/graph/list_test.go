@@ -204,10 +204,14 @@ status: {phase: Running, conditions: [{type: Ready, status: "True"}]}
 		t.Fatalf("List(namespace kube-system) diff (-want +got):\n%s", diff)
 	}
 	// The node is reached both as owner and through nodeName; that is one
-	// arrow, not two.
+	// reference, not two.
+	detail, ok := s.Detail("pod-etcd-worker-1")
+	if !ok {
+		t.Fatalf("Detail(%q) not found", "pod-etcd-worker-1")
+	}
 	want := []string{"ownerReferences -> Node/worker-1"}
-	if diff := cmp.Diff(want, linkNames(page.Items[0].Refs)); diff != "" {
-		t.Errorf("List(namespace kube-system) pod Refs diff (-want +got):\n%s", diff)
+	if diff := cmp.Diff(want, linkNames(detail.Outgoing)); diff != "" {
+		t.Errorf("Detail(%q).Outgoing diff (-want +got):\n%s", "pod-etcd-worker-1", diff)
 	}
 	nodes := s.List(Query{Scope: ScopeNodes})
 	if got := nodes.Items[0].ChildCount; got != 0 {
@@ -225,7 +229,7 @@ func TestListKeepsResourceWithUnknownOwnerAtTopLevel(t *testing.T) {
 	}
 }
 
-func TestListResolvesReferences(t *testing.T) {
+func TestDetailResolvesReferences(t *testing.T) {
 	const (
 		gatewayClass = `
 apiVersion: gateway.networking.k8s.io/v1
@@ -337,14 +341,14 @@ metadata: {namespace: other, name: web-elsewhere, labels: {app: web}}
 			if !ok {
 				t.Fatalf("Detail(%q) not found", tc.source)
 			}
-			if diff := cmp.Diff(tc.want, linkNames(detail.Summary.Refs)); diff != "" {
-				t.Errorf("Detail(%q).Summary.Refs diff (-want +got):\n%s", tc.source, diff)
+			if diff := cmp.Diff(tc.want, linkNames(detail.Outgoing)); diff != "" {
+				t.Errorf("Detail(%q).Outgoing diff (-want +got):\n%s", tc.source, diff)
 			}
 		})
 	}
 }
 
-func TestListReferenceCarriesThePathOfItsTarget(t *testing.T) {
+func TestDetailReferenceCarriesThePathOfItsTarget(t *testing.T) {
 	s := New()
 	add(t, s, deploymentWeb, replicaSetWeb, podWeb, `
 apiVersion: v1
@@ -368,12 +372,12 @@ spec:
 		Path:      []string{"ns:default", "deployment-web", "replicaset-web-7d4b9c"},
 		Relation:  "selector",
 	}}
-	if diff := cmp.Diff(want, detail.Summary.Refs); diff != "" {
-		t.Errorf("Detail(%q).Summary.Refs diff (-want +got):\n%s", "service-web", diff)
+	if diff := cmp.Diff(want, detail.Outgoing); diff != "" {
+		t.Errorf("Detail(%q).Outgoing diff (-want +got):\n%s", "service-web", diff)
 	}
 }
 
-func TestListCapsReferencesPerResource(t *testing.T) {
+func TestDetailCapsReferencesPerResource(t *testing.T) {
 	s := New()
 	add(t, s, `
 apiVersion: v1
@@ -382,21 +386,20 @@ metadata: {namespace: default, name: web}
 spec:
   selector: {app: web}
 `)
-	for i := range 60 {
+	for i := range 1010 {
 		add(t, s, fmt.Sprintf(`
 apiVersion: v1
 kind: Pod
-metadata: {namespace: default, name: web-%02d, labels: {app: web}}
+metadata: {namespace: default, name: web-%04d, labels: {app: web}}
 `, i))
 	}
 
-	page := s.List(Query{Scope: ScopeNamespace, Target: "default", HideKinds: []string{"core/Pod"}})
-	if len(page.Items) != 1 {
-		t.Fatalf("List(namespace default, hiding pods) returned %d items, want 1", len(page.Items))
+	detail, ok := s.Detail("service-web")
+	if !ok {
+		t.Fatalf("Detail(%q) not found", "service-web")
 	}
-	service := page.Items[0]
-	if len(service.Refs) != 50 || !service.RefsTruncated {
-		t.Errorf("service summary has %d refs, truncated = %t; want 50 refs, truncated = true", len(service.Refs), service.RefsTruncated)
+	if got := len(detail.Outgoing); got != 1000 {
+		t.Errorf("Detail(%q) lists %d references to the 1010 selected pods, want the cap of 1000", "service-web", got)
 	}
 }
 

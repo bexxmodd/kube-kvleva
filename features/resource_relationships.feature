@@ -1,6 +1,6 @@
 Feature: Resource relationships
   As a cluster operator
-  I want related resources shown inside each other or connected by arrows
+  I want related resources shown inside each other and their references listed
   So that I can understand how the pieces of my cluster fit together
 
   Rule: A resource is displayed inside the resource that owns it
@@ -21,25 +21,26 @@ Feature: Resource relationships
     Given a pod in a namespace that is owned by a node
     When the namespace is displayed
     Then the pod is at the top level
-    And an arrow connects the pod to the node
+    And the pod's details list the node as a reference
 
   Scenario: A resource whose owner is unknown stays at the top level
     Given a pod whose owner no longer exists
     When the namespace is displayed
     Then the pod is at the top level
 
-  Rule: A resource that references another is connected to it by an arrow
+  Rule: The details of a resource list what it refers to and what refers to it
 
-  Scenario: A route is connected to its gateway
+  Scenario: A route lists its gateway
     Given a gateway
     And an http route that names the gateway as its parent
-    When the resources are displayed
-    Then an arrow connects the http route to the gateway
+    When the http route's details are displayed
+    Then the gateway is listed as a reference
+    And the gateway's details list the http route as referring to it
 
-  Scenario Outline: Well-known references are connected
+  Scenario Outline: Well-known references are listed
     Given a <source> that refers to a <target> by <means>
-    When the resources are displayed
-    Then an arrow connects the <source> to the <target>
+    When the details of the <source> are displayed
+    Then the <target> is listed as a reference
 
     Examples:
       | source                  | target                  | means                       |
@@ -58,24 +59,30 @@ Feature: Resource relationships
       | role binding            | service account         | a subject                   |
       | service                 | pod                     | its label selector          |
 
-  Scenario: A custom resource reference is connected
+  Scenario: A custom resource reference is listed
     Given a custom resource that refers to a secret through a field ending in "Ref"
-    When the resources are displayed
-    Then an arrow connects the custom resource to the secret
+    When the custom resource's details are displayed
+    Then the secret is listed as a reference
 
-  Scenario: A reference into another namespace is connected
+  Scenario: A reference into another namespace is listed
     Given an http route in one namespace that names a gateway in another namespace as its parent
-    When the resources are displayed
-    Then an arrow connects the http route to the gateway
+    When the http route's details are displayed
+    Then the gateway is listed as a reference
 
-  Scenario: A reference to something that does not exist is reported, not drawn
+  Scenario: A reference to something that does not exist is reported as missing
     Given an http route with a backend reference to a service that does not exist
     When the http route's details are displayed
     Then the missing service is listed as a missing reference
 
-  Rule: Arrows stay visible when an endpoint is folded away
-
-  Scenario: An arrow to a folded resource ends at its nearest visible container
+  Scenario: Following a reference shows the referenced resource
     Given a service that selects a pod inside a collapsed deployment
-    When the resources are displayed
-    Then an arrow connects the service to the deployment
+    When the pod is chosen from the service's references
+    Then the pod's details are displayed
+    And the deployment is opened so that the pod is shown
+
+  Rule: References are not drawn on the cluster picture
+
+  Scenario: The cluster picture shows no arrows
+    Given an http route that names a gateway as its parent
+    When the namespace is displayed
+    Then no line or arrow is drawn between the http route and the gateway

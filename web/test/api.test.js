@@ -37,6 +37,22 @@ test('overview requests /api/overview and returns the parsed body', async () => 
   assert.deepEqual(got, fx.overview());
 });
 
+test('overview and lists ask for system resources only when the switch is on', async () => {
+  const {fetch, calls} = recordingFetch((url) => ({body: url.startsWith('/api/overview') ? fx.overview() : fx.page([])}));
+  const api = apiModule.createApi({fetch});
+
+  await api.overview({});
+  await api.overview({system: 'true'});
+  await api.resources({type: 'namespace', name: 'default'}, {});
+  await api.resources({type: 'namespace', name: 'default'}, {system: 'true', q: 'web'});
+
+  assert.equal(calls[0].url, '/api/overview');
+  assert.equal(calls[1].url, '/api/overview?system=true');
+  assert.deepEqual(parse(calls[2].url).params, {namespace: 'default', limit: '100', offset: '0'});
+  assert.deepEqual(parse(calls[3].url).params,
+      {namespace: 'default', q: 'web', system: 'true', limit: '100', offset: '0'});
+});
+
 test('resources maps each scope to its single scope parameter', async () => {
   const cases = [
     {scope: {type: 'namespace', name: 'default'}, want: {namespace: 'default'}},

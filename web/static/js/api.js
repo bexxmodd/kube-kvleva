@@ -39,18 +39,28 @@ function scopeParams(scope) {
 /**
  * Builds the URL of a resource list request.
  * @param {{type: string, name?: string, uid?: string}} scope
- * @param {{hideKinds?: string, health?: string, q?: string}=} query
+ * @param {{hideKinds?: string, health?: string, q?: string, system?: string}=} query
  * @param {{offset?: number, limit?: number}=} pageRequest
  * @return {string}
  */
 export function resourcesUrl(scope, query = {}, {offset = 0, limit = DEFAULT_LIMIT} = {}) {
   const params = new URLSearchParams(scopeParams(scope));
-  for (const name of ['hideKinds', 'health', 'q']) {
+  for (const name of ['hideKinds', 'health', 'q', 'system']) {
     if (query[name]) params.set(name, query[name]);
   }
   params.set('limit', String(limit));
   params.set('offset', String(offset));
   return `/api/resources?${params}`;
+}
+
+/**
+ * Builds the URL of the overview request. Only the system resources switch
+ * applies to the overview; the other filters narrow lists.
+ * @param {{system?: string}=} query
+ * @return {string}
+ */
+export function overviewUrl(query = {}) {
+  return query.system ? `/api/overview?${new URLSearchParams({system: query.system})}` : '/api/overview';
 }
 
 /**
@@ -100,7 +110,7 @@ export function createApi({fetch, EventSource}) {
   }
 
   return {
-    overview: () => get('/api/overview'),
+    overview: (query) => get(overviewUrl(query)),
 
     resources: async (scope, query, pageRequest) => get(resourcesUrl(scope, query, pageRequest)),
 

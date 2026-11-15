@@ -22,7 +22,7 @@ the contract between `internal/server` (Go) and `web/static` (JavaScript).
 | `health` | `"green"` (configured / reconciled), `"yellow"` (in progress, pending, or stuck), `"red"` (failed). |
 | `rollup` | `{"green": n, "yellow": n, "red": n}` — health counts of a resource **and all of its descendants**. |
 | parent / child | Containment used for nesting widgets. A resource is the child of its controller owner (`metadata.ownerReferences`) when both live in the same namespace. Example: Deployment ⊃ ReplicaSet ⊃ Pod. Containers are not resources; they are embedded in the Pod summary. |
-| reference | A directed edge `source → target` drawn as an arrow. Extracted from the source's spec (e.g. `HTTPRoute.spec.parentRefs → Gateway`, `Pod.spec.nodeName → Node`, `Service.spec.selector → Pod`). |
+| reference | A relation `source → target` listed in the details of both resources. Extracted from the source's spec (e.g. `HTTPRoute.spec.parentRefs → Gateway`, `Pod.spec.nodeName → Node`, `Service.spec.selector → Pod`). |
 | `path` | Ancestor container ids of a resource, outermost first. Used by the UI to find the nearest *visible* ancestor when a widget itself is not rendered. Elements are `"cluster"` (the cluster-scoped area), `"ns:<namespace>"`, or the `uid` of an owner. Examples: `["cluster"]`, `["ns:default"]`, `["ns:default", "<deployment uid>", "<replicaset uid>"]`. |
 
 ## `GET /api/overview`
@@ -33,6 +33,7 @@ Cheap summary of the whole cluster. Poll/refetch freely.
 {
   "cluster": {"name": "kind-kvleva", "server": "https://127.0.0.1:6443", "version": "v1.35.0"},
   "revision": 1042,
+  "systemResources": 285,
   "sync": {
     "ready": true,
     "kindsTotal": 61,
@@ -62,6 +63,41 @@ Cheap summary of the whole cluster. Poll/refetch freely.
   in the namespace.
 - `clusterScoped` covers cluster-scoped resources **excluding** Namespaces and
   Nodes. `nodes` covers Node objects only.
+- `systemResources` is the number of system resources in the cluster. It is
+  the same whether or not they are part of the other numbers.
+
+By default the overview leaves **system resources** out: every count excludes
+them and the system namespaces are not listed. `GET /api/overview?system=true`
+includes them. See *System resources* below.
+
+## System resources
+
+System resources are what a cluster brings along, as opposed to what its users
+deploy. Both `/api/overview` and `/api/resources` leave them out unless
+`system=true` is given; this is the "System resources" switch of the web
+interface, which starts off. A resource is a system resource when it
+
+- lives in a system namespace, or is that namespace: every namespace whose
+  name starts with `kube-`, and `local-path-storage` (the storage provisioner
+  that kind installs);
+- is maintained by Kubernetes itself, whenever it was created: built-in RBAC
+  roles and bindings, anything named `system:…` or `kubeadm:…`, automatically
+  managed API services, built-in API priority objects, platform add-ons
+  (`addonmanager.kubernetes.io/mode`), the `kube-root-ca.crt` ConfigMap and
+  the `default` ServiceAccount of every namespace, the `kubernetes` Service
+  and its endpoints, allocated Service addresses, CSINode objects, `system-…`
+  priority classes, and certificate requests made by nodes;
+- is a **cluster-scoped** resource created while the cluster was being
+  created, that is within 30 seconds after the `kube-system` namespace
+  appeared. This covers what installers add right after the control plane is
+  up, such as a network plugin's roles or a default storage class.
+
+Nodes and the `default` namespace are never system resources. Namespaced
+resources outside the system namespaces are never judged by their age, so an
+application deployed seconds after the cluster was created is still shown.
+
+The details of a system resource (`/api/resources/{uid}`) are always
+available, so references to system resources can be followed.
 
 ## `GET /api/resources`
 
@@ -86,6 +122,7 @@ is listed; the filter parameters apply to every scope.
 | `hideKinds=<kindId>,<kindId>` | Kinds to leave out. In tree scopes (`namespace`, `cluster`, `parent`) a hidden resource is skipped and **its children are promoted** to its place, so hiding `apps/ReplicaSet` shows Pods directly inside their Deployment. |
 | `health=red,yellow` | Keep resources with one of these health values. |
 | `q=<text>` | Keep resources whose name contains the text (case-insensitive). |
+| `system=true` | Include system resources (see *System resources*). Without it they are left out; in tree scopes a system resource is skipped like a hidden kind. |
 | `limit` | Page size. Default 100, maximum 500. |
 | `offset` | Zero-based start index. Default 0. |
 
@@ -129,12 +166,7 @@ descendants** matches, so a failing Pod stays reachable through its Deployment.
   "containers": [
     {"name": "app", "image": "nginx:1.27", "init": false, "health": "yellow",
      "state": "waiting", "reason": "ContainerCreating", "ready": false, "restarts": 0}
-  ],
-  "refs": [
-    {"uid": "77aa…", "kindId": "core/Node", "kind": "Node", "namespace": "",
-     "name": "kvleva-control-plane", "relation": "nodeName", "path": ["cluster"]}
-  ],
-  "refsTruncated": false
+  ]
 }
 ```
 
@@ -142,9 +174,8 @@ descendants** matches, so a failing Pod stays reachable through its Deployment.
 - `childCount` is the number of direct children after `hideKinds` is applied.
 - `node` and `containers` are present for Pods only. Container `state` is
   `running`, `waiting`, `terminated`, or `unknown`.
-- `refs` are the **outgoing, resolved** references (the target exists in the
-  cluster). At most 50 are returned; `refsTruncated` reports when more exist.
-  `relation` names the field the reference came from.
+- Summaries carry no references; those are part of the resource's details
+  (`outgoing`, `incoming`, `missing`).
 
 ### Ordering
 

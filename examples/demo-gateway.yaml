@@ -1,4 +1,4 @@
-# Gateway API sample: a Gateway and two HTTPRoutes, connected by arrows.
+# Gateway API sample: a Gateway and two HTTPRoutes that refer to it.
 #
 # Needs the Gateway API resource types, and examples/demo.yaml for the
 # namespace and the "web" service:
@@ -27,8 +27,8 @@ spec:
       protocol: HTTP
       port: 80
 ---
-# Arrows: HTTPRoute -> Gateway (parentRefs) and HTTPRoute -> Service
-# (backendRefs).
+# References shown in the details: HTTPRoute -> Gateway (parentRefs) and
+# HTTPRoute -> Service (backendRefs).
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:

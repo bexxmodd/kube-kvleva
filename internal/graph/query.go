@@ -14,21 +14,20 @@ const (
 	// maxDepth bounds every walk along ownership, so that a cycle of owner
 	// references cannot hang a request.
 	maxDepth = 32
-	// maxSummaryRefs caps the references carried by one Summary.
-	maxSummaryRefs = 50
 	// maxDetailLinks caps each list of links carried by one Detail.
 	maxDetailLinks = 1000
 )
 
 // filter is the compiled form of the filter fields of a Query.
 type filter struct {
-	hide   map[string]bool
-	health map[health.Status]bool // nil keeps every health
-	text   string                 // lower case; "" keeps every name
+	hide       map[string]bool
+	hideSystem bool
+	health     map[health.Status]bool // nil keeps every health
+	text       string                 // lower case; "" keeps every name
 }
 
 func newFilter(q Query) filter {
-	f := filter{text: strings.ToLower(q.Text)}
+	f := filter{text: strings.ToLower(q.Text), hideSystem: q.HideSystem}
 	if len(q.HideKinds) > 0 {
 		f.hide = make(map[string]bool, len(q.HideKinds))
 		for _, kindID := range q.HideKinds {
@@ -82,11 +81,11 @@ func (s *Store) List(q Query) Page {
 			matched = s.tree(s.childrenOf(parent), f)
 		}
 	case ScopeNodes:
-		matched = flat(s.byKind[nodeKindID], f)
+		matched = s.flat(s.byKind[nodeKindID], f)
 	case ScopePodsOnNode:
-		matched = flat(s.podsByNode[q.Target], f)
+		matched = s.flat(s.podsByNode[q.Target], f)
 	default:
-		matched = flat(s.objects, f)
+		matched = s.flat(s.objects, f)
 	}
 	sort.Slice(matched, func(i, j int) bool { return before(matched[i], matched[j]) })
 
@@ -109,11 +108,18 @@ func (s *Store) List(q Query) Page {
 	return page
 }
 
+// hidden reports whether the filter leaves o out of the picture altogether,
+// as opposed to merely not matching: its kind is hidden, or it is a system
+// resource and those are switched off.
+func (s *Store) hidden(o *object, f filter) bool {
+	return f.hide[o.kindID] || (f.hideSystem && s.isSystem(o))
+}
+
 // flat returns the resources of idx that pass the filter, ignoring nesting.
-func flat(idx index, f filter) []*object {
+func (s *Store) flat(idx index, f filter) []*object {
 	var matched []*object
 	for _, o := range idx {
-		if !f.hide[o.kindID] && f.matches(o) {
+		if !s.hidden(o, f) && f.matches(o) {
 			matched = append(matched, o)
 		}
 	}
@@ -138,15 +144,14 @@ func (s *Store) tree(candidates []*object, f filter) []*object {
 	return matched
 }
 
-// promote replaces every resource of a hidden kind by the resources nested
-// in it.
+// promote replaces every hidden resource by the resources nested in it.
 func (s *Store) promote(candidates []*object, f filter, depth int) []*object {
-	if f.hide == nil || depth > maxDepth {
+	if (f.hide == nil && !f.hideSystem) || depth > maxDepth {
 		return candidates
 	}
 	var visible []*object
 	for _, o := range candidates {
-		if f.hide[o.kindID] {
+		if s.hidden(o, f) {
 			visible = append(visible, s.promote(s.childrenOf(o), f, depth+1)...)
 		} else {
 			visible = append(visible, o)
@@ -206,26 +211,23 @@ func (s *Store) childrenOf(o *object) []*object {
 }
 
 func (s *Store) summarize(o *object, f filter) Summary {
-	links, truncated := s.links(o, maxSummaryRefs)
 	return Summary{
-		UID:           o.uid,
-		KindID:        o.kindID,
-		Group:         o.group,
-		Version:       o.version,
-		Kind:          o.kind,
-		Namespace:     o.namespace,
-		Name:          o.name,
-		Health:        o.health.Status,
-		Reason:        o.health.Reason,
-		CreatedAt:     o.createdAt,
-		ChildCount:    len(s.promote(s.childrenOf(o), f, 0)),
-		Rollup:        s.rollup(o),
-		SelfMatch:     f.matches(o),
-		Path:          s.path(o),
-		Node:          o.node,
-		Containers:    o.containers,
-		Refs:          links,
-		RefsTruncated: truncated,
+		UID:        o.uid,
+		KindID:     o.kindID,
+		Group:      o.group,
+		Version:    o.version,
+		Kind:       o.kind,
+		Namespace:  o.namespace,
+		Name:       o.name,
+		Health:     o.health.Status,
+		Reason:     o.health.Reason,
+		CreatedAt:  o.createdAt,
+		ChildCount: len(s.promote(s.childrenOf(o), f, 0)),
+		Rollup:     s.rollup(o),
+		SelfMatch:  f.matches(o),
+		Path:       s.path(o),
+		Node:       o.node,
+		Containers: o.containers,
 	}
 }
 
@@ -278,8 +280,8 @@ func (s *Store) link(target *object, relation string) Link {
 }
 
 // links returns up to limit outgoing references of o whose target exists,
-// each target once, and whether there were more.
-func (s *Store) links(o *object, limit int) ([]Link, bool) {
+// each target once.
+func (s *Store) links(o *object, limit int) []Link {
 	links := make([]Link, 0)
 	seen := map[string]bool{o.uid: true}
 	add := func(target *object, relation string) {
@@ -290,7 +292,7 @@ func (s *Store) links(o *object, limit int) ([]Link, bool) {
 		links = append(links, s.link(target, relation))
 	}
 
-	// An owner that o is not displayed inside is drawn as a reference.
+	// An owner that o is not displayed inside is listed as a reference.
 	parent := s.parentOf(o)
 	for _, owner := range o.owners {
 		if target := s.objects[owner.UID]; target != parent {
@@ -311,9 +313,9 @@ func (s *Store) links(o *object, limit int) ([]Link, bool) {
 		}
 	}
 	if len(links) > limit {
-		return links[:limit], true
+		links = links[:limit]
 	}
-	return links, false
+	return links
 }
 
 // selectedPods returns up to limit Pods matched by the selector of o.
@@ -355,8 +357,9 @@ func (s *Store) lookup(r refs.Ref, namespace string) *object {
 	return nil
 }
 
-// Overview summarizes the whole cluster.
-func (s *Store) Overview() Overview {
+// Overview summarizes the cluster, or with opts.HideSystem only what is not
+// a system resource.
+func (s *Store) Overview(opts OverviewOptions) Overview {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -387,6 +390,12 @@ func (s *Store) Overview() Overview {
 	}
 
 	for _, o := range s.objects {
+		if s.isSystem(o) {
+			overview.SystemResources++
+			if opts.HideSystem {
+				continue
+			}
+		}
 		status := o.health.Status
 		overview.Health.add(status)
 		if kind, ok := kinds[o.kindID]; ok {

@@ -39,6 +39,11 @@ function shellTags() {
   return new Set([...document.querySelectorAll('*')].map((e) => e.localName));
 }
 
+/** How many scripts the static shell loads itself (its entry point and the theme boot script). */
+function shellScripts() {
+  return loadShell().document.querySelectorAll('script').length;
+}
+
 /** Asserts that nothing in the document was created from hostile text. */
 function assertInert(document, window) {
   const allowed = new Set([...shellTags(),
@@ -55,8 +60,8 @@ function assertInert(document, window) {
     }
   }
   assert.equal(document.querySelectorAll('img, iframe, object, embed, a').length, 0);
-  assert.equal(document.querySelectorAll('script').length, 1, 'only the entry point of the shell');
-  assert.equal(document.querySelectorAll('svg').length, 1, 'only the arrow layer of the shell');
+  assert.equal(document.querySelectorAll('script').length, shellScripts(), 'no script but those of the shell');
+  assert.equal(document.querySelectorAll('svg').length, 0);
   assert.equal(window.pwned, undefined);
 }
 
@@ -96,7 +101,6 @@ test('hostile text in any field of the canvas data stays inert', () => {
 
   view.renderCanvas({overview, tree: t, selection: {uid: pod.uid, container: pod.containers[0].name}});
   view.setSelection({uid: deployment.uid});
-  view.drawArrows([{from: pod.uid, to: node.uid, relations: [PAYLOAD], emphasized: true}]);
   view.reveal(pod.uid);
 
   assertInert(document, window);
@@ -115,11 +119,14 @@ test('hostile text in the header and sidebar data stays inert', () => {
   const hidden = filters.setKindHidden(filters.setQuery(filters.defaultFilters(), PAYLOAD), overview.kinds[0].kindId, true);
 
   view.renderHeader({overview, filters: hidden, stream: 'reconnecting'});
-  view.renderSidebar({overview, filters: hidden, arrowsCapped: true});
+  // API groups start collapsed; expanded, their hostile types are listed too.
+  view.setExpandedGroups(overview.kinds.map((kind) => kind.group));
+  view.renderSidebar({overview, filters: hidden});
 
   assertInert(document, window);
   assert.ok(document.getElementById('cluster-name').textContent.includes(XSS));
   assert.ok(document.querySelector('.sync-errors li').textContent.includes(XSS));
+  assert.ok(document.querySelector('#kind-list .kind-group-name').textContent.includes(XSS));
   assert.ok(document.querySelector('#kind-list .kind-name').textContent.includes(XSS));
   assert.equal(document.getElementById('search').value, PAYLOAD.trim());
 });

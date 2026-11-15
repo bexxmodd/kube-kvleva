@@ -4,19 +4,30 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>kvleva</title>
+  <script src="js/theme-boot.js"></script>
   <link rel="stylesheet" href="css/app.css">
   <script type="module" src="js/main.js"></script>
 </head>
 <body>
   <header class="header">
+    <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="true"
+            title="Hide the filters panel"><span aria-hidden="true">☰</span> Filters</button>
     <h1 class="app-name">kvleva</h1>
     <span id="cluster-name" class="cluster-name"></span>
     <span id="cluster-version" class="cluster-version"></span>
     <span id="sync" class="sync" role="status"></span>
     <span id="stream" class="stream" role="status"></span>
+    <label class="switch" title="Show what the cluster brought along: system namespaces, built-in resources, and what was installed when the cluster was created">
+      <input id="system-toggle" type="checkbox" role="switch">
+      <span class="switch-track" aria-hidden="true"></span>
+      <span class="switch-label">System resources</span>
+      <span id="system-count" class="switch-count"></span>
+    </label>
     <div id="pills" class="pills" role="group" aria-label="Cluster health totals"></div>
     <input id="search" class="search" type="search" placeholder="Search by name…"
            aria-label="Search resources by name" autocomplete="off" spellcheck="false">
+    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to the day theme"
+            title="Switch to the day theme"><span id="theme-icon" aria-hidden="true">&#x2600;&#xFE0E;</span> <span id="theme-name">Day</span></button>
   </header>
 
   <div class="layout">
@@ -33,14 +44,6 @@
           <span class="dot health-red" aria-hidden="true">■</span> red</label>
       </fieldset>
 
-      <fieldset id="connections-filter" class="filter-group">
-        <legend>Connections</legend>
-        <label class="check"><input type="radio" name="connections" value="all" checked> all</label>
-        <label class="check"><input type="radio" name="connections" value="selected"> selected only</label>
-        <label class="check"><input type="radio" name="connections" value="off"> off</label>
-        <p id="connections-note" class="note" role="status" hidden></p>
-      </fieldset>
-
       <fieldset id="kinds-filter" class="filter-group">
         <legend>Resource types</legend>
         <input id="kind-search" class="kind-search" type="search" placeholder="Narrow types…"
@@ -53,6 +56,9 @@
       </fieldset>
     </nav>
 
+    <div id="sidebar-resizer" class="resizer" role="separator" aria-orientation="vertical" aria-controls="sidebar"
+         aria-label="Resize the filters panel" tabindex="0" title="Drag to resize the filters panel"></div>
+
     <main id="canvas" class="canvas" aria-label="Cluster">
       <div id="canvas-content" class="canvas-content">
         <section id="cluster-box" class="cluster-box">
@@ -63,21 +69,11 @@
           </header>
           <div id="areas" class="areas"></div>
         </section>
-        <svg id="arrows" class="arrows" aria-hidden="true" focusable="false">
-          <defs>
-            <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="8" refY="4"
-                    orient="auto" markerUnits="userSpaceOnUse">
-              <path d="M0 0 L8 4 L0 8 z"></path>
-            </marker>
-            <marker id="arrowhead-emphasized" markerWidth="10" markerHeight="10" refX="10" refY="5"
-                    orient="auto" markerUnits="userSpaceOnUse">
-              <path d="M0 0 L10 5 L0 10 z"></path>
-            </marker>
-          </defs>
-          <g id="arrow-paths"></g>
-        </svg>
       </div>
     </main>
+
+    <div id="drawer-resizer" class="resizer" role="separator" aria-orientation="vertical" aria-controls="drawer"
+         aria-label="Resize the details panel" tabindex="0" title="Drag to resize the details panel" hidden></div>
 
     <aside id="drawer" class="drawer" aria-label="Details" hidden>
       <button id="drawer-close" class="drawer-close" type="button" aria-label="Close details">×</button>

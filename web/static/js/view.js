@@ -1,17 +1,18 @@
-// DOM building and updating: header, sidebar, canvas, drawer and the arrow
-// layer. This is the only module (besides main.js) that touches the document.
+// DOM building and updating: header, sidebar, canvas and drawer. This is the
+// only module (besides main.js) that touches the document.
 //
 // SECURITY: everything that comes from the API (names, reasons, messages,
 // YAML, kinds...) is untrusted. It reaches the page only through `textContent`,
 // `createTextNode`, `value` and `setAttribute` on a fixed set of harmless
 // attribute names. No markup is ever built from strings.
 
-import {curve, relativeRect} from './edges.js';
-import {isKindHidden, matchKinds} from './filters.js';
+import {groupKinds, groupState, isKindHidden, matchKinds} from './filters.js';
+import {
+  clampDrawerWidth, clampSidebarWidth, DRAWER_MIN_WIDTH, otherTheme, PANEL_KEY_STEP, panelMaxWidth,
+  SIDEBAR_MIN_WIDTH,
+} from './layout.js';
 import {childScope, lanes, remaining, scopeKey} from './tree.js';
 import {tokenize} from './yaml.js';
-
-const SVG_NS = 'http://www.w3.org/2000/svg';
 
 const HEALTHS = ['green', 'yellow', 'red'];
 
@@ -127,17 +128,25 @@ export function createView(doc, handlers) {
     });
   }
 
+  /** The switch for system resources, with how many there are. */
+  function renderSystemSwitch(count, shown) {
+    byId('system-toggle').checked = shown;
+    byId('system-count').textContent = count > 0 ? `${count} ${shown ? 'shown' : 'hidden'}` : '';
+  }
+
   function renderHeader({overview, filters, stream}) {
     byId('cluster-name').textContent = overview.cluster.name;
     byId('cluster-version').textContent = overview.cluster.version;
     renderSync(overview.sync);
     byId('stream').textContent = stream === 'reconnecting' ? 'reconnecting…' : '';
+    renderSystemSwitch(overview.systemResources ?? 0, filters.system === true);
     renderPills(overview.health, filters);
     const search = byId('search');
     // Never fight the user: leave the box alone while they are typing in it.
     if (doc.activeElement !== search) search.value = filters.q;
   }
 
+  byId('system-toggle').addEventListener('change', (event) => handlers.onSystemToggle(event.target.checked));
   byId('pills').addEventListener('click', (event) => {
     const pill = event.target.closest('[data-health]');
     if (pill) handlers.onHealthToggle(pill.dataset.health);
@@ -149,51 +158,132 @@ export function createView(doc, handlers) {
   /** Last model given to renderSidebar, so typing in the box can re-narrow. */
   let sidebarModel = null;
 
+  /** One resource type: a checkbox, its name, and how many there are. */
+  function kindRow(kind, filters) {
+    const box = el('input', {attrs: {
+      'type': 'checkbox', 'data-kind-id': kind.kindId, 'data-focus-key': `kind:${kind.kindId}`,
+    }});
+    box.checked = !isKindHidden(filters, kind.kindId);
+    return el('li', {class: 'kind-row'}, [el('label', {class: 'check'}, [
+      box,
+      el('span', {class: 'kind-name', text: kind.kind}),
+      el('span', {class: 'count', text: kind.count}),
+    ])]);
+  }
+
+  /**
+   * Names of the API groups whose types the user dropped down. Groups start
+   * collapsed, so that the list opens as a short survey of the groups.
+   */
+  let expandedGroups = new Set();
+
+  /**
+   * The disclosure button of an API group: expands or collapses the types
+   * listed under it. It only changes the list, never a filter.
+   * @param {string} group
+   * @param {boolean} expanded Whether the types of the group are listed.
+   * @param {boolean} narrowing Whether the user is narrowing the list by text.
+   * @return {!HTMLElement}
+   */
+  function groupToggle(group, expanded, narrowing) {
+    const button = el('button', {class: 'toggle group-toggle', text: expanded ? '▾' : '▸', attrs: {
+      'type': 'button',
+      'data-group-toggle': group,
+      'data-focus-key': `group-toggle:${group}`,
+      'aria-expanded': String(expanded),
+      'aria-label': `${expanded ? 'Collapse' : 'Expand'} the resource types of ${group}`,
+      'title': narrowing ? 'Everything that matches the text is listed' : expanded ? 'Collapse' : 'Expand',
+    }});
+    // Narrowing lists every match, so there is nothing to collapse meanwhile.
+    button.disabled = narrowing;
+    return button;
+  }
+
+  /**
+   * One API group: a heading with a disclosure button and a checkbox that
+   * acts on every type of the group, followed by those types once the group
+   * is expanded.
+   */
+  function kindGroup({group, kinds, count}, filters, narrowing) {
+    const box = el('input', {attrs: {
+      'type': 'checkbox', 'data-group': group, 'data-focus-key': `group:${group}`,
+      'aria-label': `All resource types of ${group}`,
+    }});
+    const state = groupState(filters, kinds);
+    box.checked = state === 'shown';
+    box.indeterminate = state === 'partly';
+    const expanded = narrowing || expandedGroups.has(group);
+    return el('li', {class: expanded ? 'kind-group' : 'kind-group collapsed', attrs: {'data-group': group}}, [
+      el('div', {class: 'kind-group-bar'}, [
+        groupToggle(group, expanded, narrowing),
+        el('label', {class: 'check kind-group-head'}, [
+          box,
+          el('span', {class: 'kind-group-name', text: group}),
+          el('span', {class: 'count', text: count}),
+        ]),
+      ]),
+      expanded ? el('ul', {class: 'kind-group-kinds'}, kinds.map((kind) => kindRow(kind, filters))) : null,
+    ]);
+  }
+
+  /** The API groups currently listed, by name, for the group checkboxes. */
+  let listedGroups = new Map();
+
   function renderKindList() {
     const {overview, filters} = sidebarModel;
     const list = byId('kind-list');
-    const kinds = matchKinds(overview.kinds, byId('kind-search').value);
+    const text = byId('kind-search').value;
+    // Narrowing happens before grouping, so a group only lists, counts, and
+    // acts on the types that match.
+    const groups = groupKinds(matchKinds(overview.kinds, text));
+    // While narrowing, a match is listed even when its group is collapsed:
+    // someone looking for a type must not be told it does not exist.
+    const narrowing = text.trim() !== '';
+    listedGroups = new Map(groups.map((g) => [g.group, g]));
     keepFocus(list, () => {
-      list.replaceChildren(...kinds.map((kind) => {
-        const box = el('input', {attrs: {
-          'type': 'checkbox', 'data-kind-id': kind.kindId, 'data-focus-key': `kind:${kind.kindId}`,
-        }});
-        box.checked = !isKindHidden(filters, kind.kindId);
-        return el('li', {}, [el('label', {class: 'check'}, [
-          box,
-          el('span', {class: 'kind-name', text: kind.kind}),
-          el('span', {class: 'kind-group', text: kind.group}),
-          el('span', {class: 'count', text: kind.count}),
-        ])]);
-      }));
+      list.replaceChildren(...groups.map((g) => kindGroup(g, filters, narrowing)));
     });
   }
 
   function renderSidebar(model) {
     sidebarModel = model;
-    const {filters, arrowsCapped} = model;
+    const {filters} = model;
     for (const box of byId('health-filter').querySelectorAll('input[data-health]')) {
       box.checked = filters.health[box.dataset.health] === true;
     }
-    for (const radio of byId('connections-filter').querySelectorAll('input[type="radio"]')) {
-      radio.checked = radio.value === filters.connections;
-    }
-    const note = byId('connections-note');
-    note.hidden = !arrowsCapped;
-    note.textContent = arrowsCapped ?
-        'More than 300 connections are visible: showing only those of the hovered or selected resource.' : '';
     renderKindList();
+  }
+
+  /**
+   * Expands exactly the named API groups in the list of resource types; every
+   * other group is collapsed. Names of groups the cluster does not have are
+   * kept for when it does.
+   * @param {!Array<string>} groups
+   */
+  function setExpandedGroups(groups) {
+    expandedGroups = new Set(groups);
+    if (sidebarModel) renderKindList();
   }
 
   byId('health-filter').addEventListener('change', (event) => {
     if (event.target.dataset.health) handlers.onHealthToggle(event.target.dataset.health);
   });
-  byId('connections-filter').addEventListener('change', (event) => {
-    if (event.target.checked) handlers.onConnections(event.target.value);
-  });
   byId('kind-list').addEventListener('change', (event) => {
-    const kindId = event.target.dataset.kindId;
-    if (kindId !== undefined) handlers.onKindHidden(kindId, !event.target.checked);
+    const {kindId, group} = event.target.dataset;
+    if (kindId !== undefined) {
+      handlers.onKindHidden(kindId, !event.target.checked);
+    } else if (group !== undefined && listedGroups.has(group)) {
+      const kindIds = listedGroups.get(group).kinds.map((kind) => kind.kindId);
+      handlers.onKindsHidden(kindIds, !event.target.checked);
+    }
+  });
+  byId('kind-list').addEventListener('click', (event) => {
+    const group = event.target.closest('[data-group-toggle]')?.dataset.groupToggle;
+    if (group === undefined) return;
+    // Deleting returns false when the group was not expanded: expand it.
+    if (!expandedGroups.delete(group)) expandedGroups.add(group);
+    renderKindList();
+    handlers.onGroupsExpanded([...expandedGroups]);
   });
   byId('kinds-all').addEventListener('click', () => handlers.onAllKindsHidden(false));
   byId('kinds-none').addEventListener('click', () => handlers.onAllKindsHidden(true));
@@ -454,45 +544,6 @@ export function createView(doc, handlers) {
     return rendered.has(id);
   }
 
-  /** @return {boolean} Whether the box of `outerId` holds the box of `innerId`. */
-  function contains(outerId, innerId) {
-    const outer = elementFor(outerId);
-    const inner = elementFor(innerId);
-    return outer !== null && inner !== null && outer !== inner && outer.contains(inner);
-  }
-
-  /**
-   * Replaces the drawn arrows. Geometry comes from the current layout, so this
-   * must run after rendering (main.js throttles it with requestAnimationFrame).
-   * @param {!Array<{from: string, to: string, emphasized: boolean}>} arrows
-   */
-  function drawArrows(arrows) {
-    const origin = byId('arrows').getBoundingClientRect();
-    const rects = new Map();
-    const rectOf = (id) => {
-      if (!rects.has(id)) {
-        const element = elementFor(id);
-        rects.set(id, element ? relativeRect(element.getBoundingClientRect(), origin) : null);
-      }
-      return rects.get(id);
-    };
-    const paths = [];
-    // Emphasized arrows last, so they are painted over the faint ones.
-    for (const arrow of [...arrows].sort((a, b) => Number(a.emphasized) - Number(b.emphasized))) {
-      const from = rectOf(arrow.from);
-      const to = rectOf(arrow.to);
-      if (!from || !to) continue;
-      const path = doc.createElementNS(SVG_NS, 'path');
-      path.setAttribute('class', arrow.emphasized ? 'arrow emphasized' : 'arrow');
-      path.setAttribute('d', curve(from, to));
-      path.setAttribute('marker-end', arrow.emphasized ? 'url(#arrowhead-emphasized)' : 'url(#arrowhead)');
-      path.setAttribute('data-from', arrow.from);
-      path.setAttribute('data-to', arrow.to);
-      paths.push(path);
-    }
-    byId('arrow-paths').replaceChildren(...paths);
-  }
-
   /**
    * Scrolls a rendered resource or area into view and flashes it.
    * @param {string} id
@@ -575,19 +626,6 @@ export function createView(doc, handlers) {
     if (event.key === 'Escape') handlers.onCloseDrawer();
   });
 
-  /** Id of the widget under the pointer, or null. */
-  let hovered = null;
-
-  function setHovered(id) {
-    if (id === hovered) return;
-    hovered = id;
-    handlers.onHover(id);
-  }
-
-  canvasEl.addEventListener('mouseover', (event) => {
-    setHovered(targetElement(event).closest('.widget')?.dataset.id ?? null);
-  });
-  canvasEl.addEventListener('mouseleave', () => setHovered(null));
   canvasEl.addEventListener('animationend', (event) => targetElement(event).classList.remove('flash'));
 
   // --- Drawer ----------------------------------------------------------------
@@ -799,6 +837,8 @@ export function createView(doc, handlers) {
   function renderDrawer(drawer) {
     const panel = byId('drawer');
     const body = byId('drawer-body');
+    // The divider of the details panel is only there while the panel is.
+    byId('drawer-resizer').hidden = drawer.state === 'closed';
     if (drawer.state === 'closed') {
       panel.hidden = true;
       body.replaceChildren();
@@ -827,8 +867,176 @@ export function createView(doc, handlers) {
     banner.textContent = message ?? '';
   }
 
+  // --- Side panel widths -------------------------------------------------------
+  // The divider between a side panel and the canvas can be dragged, or moved
+  // with the arrow keys while focused. The width is applied here; the
+  // application only hears about the width the user settled on.
+
+  const viewportWidth = () => doc.defaultView.innerWidth;
+
+  /**
+   * Makes a side panel resizable through its divider.
+   * @param {{
+   *   panel: !Element,
+   *   divider: !Element,
+   *   min: number,
+   *   clamp: function(*, number): number,
+   *   widthAt: function(number): number,
+   *   grow: number,
+   *   report: function(number),
+   * }} options `clamp` brings a width within the panel's limits for a window
+   *     width (never more than a third of it). `widthAt` is the panel width
+   *     that puts the divider under a pointer at the given x. `grow` is +1
+   *     when moving the divider right widens the panel and -1 when moving it
+   *     left does. `report` hears the width the user settled on.
+   * @return {function(?number)} Gives the panel a width in pixels; null
+   *     restores its default.
+   */
+  function resizable({panel, divider, min, clamp, widthAt, grow, report}) {
+    /** Width the panel was given, or null while it has its default. */
+    let width = null;
+    let dragging = false;
+
+    /** Keeps the divider's description for assistive technology up to date. */
+    function describe() {
+      const viewport = viewportWidth();
+      const max = panelMaxWidth(viewport);
+      divider.setAttribute('aria-valuemin', String(Math.min(min, max)));
+      divider.setAttribute('aria-valuemax', String(max));
+      divider.setAttribute('aria-valuenow', String(clamp(width, viewport)));
+    }
+
+    function setWidth(wanted) {
+      if (wanted === null || wanted === undefined) {
+        width = null;
+        panel.style.width = '';
+      } else {
+        width = clamp(wanted, viewportWidth());
+        panel.style.width = `${width}px`;
+      }
+      describe();
+    }
+
+    divider.addEventListener('mousedown', (event) => {
+      if (event.button !== 0) return;
+      // Without this the drag would select text across the page.
+      event.preventDefault();
+      dragging = true;
+      doc.body.classList.add('resizing-panel');
+    });
+    // The pointer leaves the thin divider as soon as it moves, so the rest of
+    // the drag is followed on the whole document.
+    doc.addEventListener('mousemove', (event) => {
+      if (dragging) setWidth(widthAt(event.clientX));
+    });
+    doc.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      doc.body.classList.remove('resizing-panel');
+      if (width !== null) report(width);
+    });
+    divider.addEventListener('keydown', (event) => {
+      const direction = {ArrowLeft: -1, ArrowRight: 1}[event.key];
+      if (direction === undefined) return;
+      event.preventDefault();
+      setWidth(clamp(width, viewportWidth()) + direction * grow * PANEL_KEY_STEP);
+      report(width);
+    });
+    // The stylesheet caps the panel when the window shrinks; only the limits
+    // announced on the divider need refreshing.
+    doc.defaultView.addEventListener('resize', describe);
+    describe();
+    return setWidth;
+  }
+
+  const sidebarEl = byId('sidebar');
+  const resizer = byId('sidebar-resizer');
+  const setSidebarWidth = resizable({
+    panel: sidebarEl,
+    divider: resizer,
+    min: SIDEBAR_MIN_WIDTH,
+    clamp: clampSidebarWidth,
+    // The filters panel starts at the left edge of the window.
+    widthAt: (x) => x - sidebarEl.getBoundingClientRect().left,
+    grow: 1,
+    report: (width) => handlers.onSidebarWidth(width),
+  });
+
+  const drawerEl = byId('drawer');
+  const setDrawerWidth = resizable({
+    panel: drawerEl,
+    divider: byId('drawer-resizer'),
+    min: DRAWER_MIN_WIDTH,
+    clamp: clampDrawerWidth,
+    // The details panel ends at the right edge of the window, so its divider
+    // is on its left and dragging to the left widens it.
+    widthAt: (x) => (drawerEl.getBoundingClientRect().right || viewportWidth()) - x,
+    grow: -1,
+    report: (width) => handlers.onDrawerWidth(width),
+  });
+
+  // --- Hiding the filters panel ----------------------------------------------
+  // The button in the header hides the panel together with its divider. The
+  // filters themselves are untouched: they keep applying while out of sight.
+
+  const sidebarToggle = byId('sidebar-toggle');
+
+  /**
+   * Hides or shows the filters panel.
+   * @param {boolean} hidden
+   */
+  function setSidebarHidden(hidden) {
+    // Keyboard focus must not stay behind in a panel that is no longer there.
+    const focusInside = hidden && sidebarEl.contains(doc.activeElement);
+    sidebarEl.hidden = hidden;
+    resizer.hidden = hidden;
+    sidebarToggle.setAttribute('aria-expanded', String(!hidden));
+    sidebarToggle.title = hidden ? 'Show the filters panel' : 'Hide the filters panel';
+    if (focusInside) sidebarToggle.focus();
+  }
+
+  sidebarToggle.addEventListener('click', () => {
+    const hidden = !sidebarEl.hidden;
+    setSidebarHidden(hidden);
+    handlers.onSidebarHidden(hidden);
+  });
+
+  // --- Theme -----------------------------------------------------------------
+  // The stylesheet has a night theme (the default) and a day theme, chosen by
+  // the data-theme attribute of the root element. The button in the header
+  // names the theme it switches to.
+
+  const THEME_BUTTON = {
+    day: {icon: '\u2600\uFE0E', name: 'Day'},
+    night: {icon: '\u263E\uFE0E', name: 'Night'},
+  };
+
+  /**
+   * Shows the page in a theme.
+   * @param {string} theme 'day'; anything else is the night theme.
+   */
+  function setTheme(theme) {
+    const shown = theme === 'day' ? 'day' : 'night';
+    const other = otherTheme(shown);
+    doc.documentElement.dataset.theme = shown;
+    byId('theme-icon').textContent = THEME_BUTTON[other].icon;
+    byId('theme-name').textContent = THEME_BUTTON[other].name;
+    const label = `Switch to the ${other} theme`;
+    byId('theme-toggle').setAttribute('aria-label', label);
+    byId('theme-toggle').title = label;
+  }
+
+  byId('theme-toggle').addEventListener('click', () => {
+    // The page itself knows its theme: js/theme-boot.js may have applied a
+    // remembered one before this module ran.
+    const theme = otherTheme(doc.documentElement.dataset.theme);
+    setTheme(theme);
+    handlers.onTheme(theme);
+  });
+
   return {
     renderHeader, renderSidebar, renderCanvas, renderDrawer, renderError,
-    setSelection, hasElement, contains, drawArrows, reveal,
+    setSelection, hasElement, reveal, setSidebarWidth, setSidebarHidden, setDrawerWidth, setExpandedGroups,
+    setTheme,
   };
 }

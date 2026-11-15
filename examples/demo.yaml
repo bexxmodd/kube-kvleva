@@ -1,5 +1,5 @@
-# Sample workloads that exercise what kvleva shows: nesting, arrows, and all
-# three health colors. Apply to a throwaway cluster:
+# Sample workloads that exercise what kvleva shows: nesting, references, and
+# all three health colors. Apply to a throwaway cluster:
 #
 #   kubectl --context kind-kvleva apply -f examples/demo.yaml
 #
@@ -33,8 +33,8 @@ metadata:
   name: web
   namespace: kvleva-demo
 ---
-# Green: a deployment whose pods run two containers each. Arrows lead to the
-# config map, the secret, the service account, and the node of each pod.
+# Green: a deployment whose pods run two containers each. The details of each
+# pod list the config map, the secret, the service account, and its node.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -138,7 +138,7 @@ func BenchmarkLargeCluster(b *testing.B) {
 		name string
 		run  func()
 	}{
-		{name: "overview", run: func() { s.Overview() }},
+		{name: "overview", run: func() { s.Overview(OverviewOptions{}) }},
 		{name: "namespace_page", run: func() { s.List(Query{Scope: ScopeNamespace, Target: "team-042"}) }},
 		{name: "namespace_page_failing_only", run: func() {
 			s.List(Query{Scope: ScopeNamespace, Target: "team-042", Health: []string{"red"}})

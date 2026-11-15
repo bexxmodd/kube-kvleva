@@ -147,8 +147,8 @@ func TestWatcherLoadsBuiltInAndCustomResources(t *testing.T) {
 
 	store := startWatcher(t, discovery, client, WatcherOptions{})
 
-	if !eventually(func() bool { return store.Overview().Sync.Ready }) {
-		t.Fatalf("store never became ready; sync state: %+v", store.Overview().Sync)
+	if !eventually(func() bool { return store.Overview(graph.OverviewOptions{}).Sync.Ready }) {
+		t.Fatalf("store never became ready; sync state: %+v", store.Overview(graph.OverviewOptions{}).Sync)
 	}
 	want := []string{"Deployment/web", "Widget/gadget"}
 	if diff := cmp.Diff(want, resourceNames(store)); diff != "" {
@@ -158,7 +158,7 @@ func TestWatcherLoadsBuiltInAndCustomResources(t *testing.T) {
 		{KindID: "apps/Deployment", Group: "apps", Version: "v1", Kind: "Deployment", Namespaced: true, Count: 1, Rollup: graph.Rollup{Yellow: 1}},
 		{KindID: "example.io/Widget", Group: "example.io", Version: "v1", Kind: "Widget", Namespaced: true, Count: 1, Rollup: graph.Rollup{Green: 1}},
 	}
-	if diff := cmp.Diff(wantKinds, store.Overview().Kinds); diff != "" {
+	if diff := cmp.Diff(wantKinds, store.Overview(graph.OverviewOptions{}).Kinds); diff != "" {
 		t.Errorf("kinds after sync diff (-want +got):\n%s", diff)
 	}
 }
@@ -174,8 +174,8 @@ func TestWatcherSkipsExcludedAndUnreadableResources(t *testing.T) {
 
 	store := startWatcher(t, discovery, client, WatcherOptions{Exclude: []string{"secrets", "widgets.example.io"}})
 
-	if !eventually(func() bool { return store.Overview().Sync.Ready }) {
-		t.Fatalf("store never became ready; sync state: %+v", store.Overview().Sync)
+	if !eventually(func() bool { return store.Overview(graph.OverviewOptions{}).Sync.Ready }) {
+		t.Fatalf("store never became ready; sync state: %+v", store.Overview(graph.OverviewOptions{}).Sync)
 	}
 	if diff := cmp.Diff([]string{"Deployment/web"}, resourceNames(store)); diff != "" {
 		t.Errorf("resources after sync diff (-want +got):\n%s", diff)
@@ -196,8 +196,8 @@ func TestWatcherFollowsChanges(t *testing.T) {
 		clusterObject("example.io/v1", "Widget", "first"),
 	)
 	store := startWatcher(t, discovery, client, WatcherOptions{})
-	if !eventually(func() bool { return store.Overview().Sync.Ready }) {
-		t.Fatalf("store never became ready; sync state: %+v", store.Overview().Sync)
+	if !eventually(func() bool { return store.Overview(graph.OverviewOptions{}).Sync.Ready }) {
+		t.Fatalf("store never became ready; sync state: %+v", store.Overview(graph.OverviewOptions{}).Sync)
 	}
 	widgets := client.Resource(widgetsGVR).Namespace("default")
 
@@ -241,8 +241,8 @@ func TestWatcherPicksUpResourceTypesAddedLater(t *testing.T) {
 		clusterObject("example.io/v1", "Gadget", "gizmo"),
 	)
 	store := startWatcher(t, discovery, client, WatcherOptions{})
-	if !eventually(func() bool { return store.Overview().Sync.Ready }) {
-		t.Fatalf("store never became ready; sync state: %+v", store.Overview().Sync)
+	if !eventually(func() bool { return store.Overview(graph.OverviewOptions{}).Sync.Ready }) {
+		t.Fatalf("store never became ready; sync state: %+v", store.Overview(graph.OverviewOptions{}).Sync)
 	}
 	if diff := cmp.Diff([]string{"Widget/gadget"}, resourceNames(store)); diff != "" {
 		t.Fatalf("resources before the new type is installed diff (-want +got):\n%s", diff)
@@ -273,9 +273,9 @@ func TestWatcherForgetsResourceTypesThatAreRemoved(t *testing.T) {
 
 	discovery.set(appsResources)
 
-	forgotten := eventually(func() bool { return len(store.Overview().Kinds) == 1 })
+	forgotten := eventually(func() bool { return len(store.Overview(graph.OverviewOptions{}).Kinds) == 1 })
 	if !forgotten {
-		t.Fatalf("a removed resource type is still known; kinds: %+v", store.Overview().Kinds)
+		t.Fatalf("a removed resource type is still known; kinds: %+v", store.Overview(graph.OverviewOptions{}).Kinds)
 	}
 	if diff := cmp.Diff([]string{"Deployment/web"}, resourceNames(store)); diff != "" {
 		t.Errorf("resources after the type was removed diff (-want +got):\n%s", diff)
@@ -295,10 +295,10 @@ func TestWatcherReportsResourceTypesItCannotRead(t *testing.T) {
 
 	store := startWatcher(t, discovery, client, WatcherOptions{})
 
-	if !eventually(func() bool { return store.Overview().Sync.Ready }) {
-		t.Fatalf("store never settled; sync state: %+v", store.Overview().Sync)
+	if !eventually(func() bool { return store.Overview(graph.OverviewOptions{}).Sync.Ready }) {
+		t.Fatalf("store never settled; sync state: %+v", store.Overview(graph.OverviewOptions{}).Sync)
 	}
-	sync := store.Overview().Sync
+	sync := store.Overview(graph.OverviewOptions{}).Sync
 	if len(sync.Errors) != 1 || sync.Errors[0].KindID != "example.io/Widget" {
 		t.Errorf("sync errors = %+v, want exactly one for example.io/Widget", sync.Errors)
 	}
